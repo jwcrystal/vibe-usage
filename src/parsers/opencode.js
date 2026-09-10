@@ -1,21 +1,58 @@
-import { readdirSync, readFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { aggregateToBuckets, extractSessions } from './aggregate.js';
 import { queryDbJson, sqliteUnavailableError, isSqliteUnavailableError } from './sqlite.js';
 
 const DATA_DIR = join(homedir(), '.local', 'share', 'opencode');
-const DB_PATH = join(DATA_DIR, 'opencode.db');
 const MESSAGES_DIR = join(DATA_DIR, 'storage', 'message');
+
+// OpenCode records `path.root` (the git/project root) on most sessions, but for
+// sessions outside a git repo — or ones whose root was never written — `root` is
+// null or "/". `path.cwd` is always populated and points at the real project dir,
+// so fall back to it to avoid collapsing such sessions into "unknown".
+export function resolveProject(rootPath, cwdPath) {
+  const root = rootPath && rootPath !== '/' ? rootPath : cwdPath;
+  const name = root ? basename(root) : '';
+  return name || 'unknown';
+}
+
+/** Return the most recently modified OpenCode database in the data directory. */
+export function findActiveDatabase(dataDir = DATA_DIR) {
+  let entries;
+  try {
+    entries = readdirSync(dataDir, { withFileTypes: true });
+  } catch {
+    return undefined;
+  }
+
+  let active;
+  let activeModified = -Infinity;
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^opencode.*\.db$/.test(entry.name)) continue;
+    const dbPath = join(dataDir, entry.name);
+    try {
+      const modified = statSync(dbPath).mtimeMs;
+      if (modified > activeModified) {
+        active = dbPath;
+        activeModified = modified;
+      }
+    } catch {
+      // A database can disappear while OpenCode rotates its data files.
+    }
+  }
+  return active;
+}
 
 /**
  * Parse opencode usage data.
  * Tries SQLite database first (opencode >= v0.2), falls back to legacy JSON files.
  */
 export async function parse() {
-  if (existsSync(DB_PATH)) {
+  const dbPath = findActiveDatabase();
+  if (dbPath) {
     try {
-      return parseFromSqlite();
+      return parseFromSqlite(dbPath);
     } catch (err) {
       process.stderr.write(`warn: opencode sqlite parse failed (${err.message}), trying legacy json...\n`);
     }
@@ -23,19 +60,20 @@ export async function parse() {
   return parseFromJson();
 }
 
-function parseFromSqlite() {
+function parseFromSqlite(dbPath) {
   const query = `SELECT
     session_id as sessionID,
     json_extract(data, '$.role') as role,
     json_extract(data, '$.time.created') as created,
     json_extract(data, '$.modelID') as modelID,
     json_extract(data, '$.tokens') as tokens,
-    json_extract(data, '$.path.root') as rootPath
+    json_extract(data, '$.path.root') as rootPath,
+    json_extract(data, '$.path.cwd') as cwdPath
     FROM message`;
 
   let rows;
   try {
-    rows = queryDbJson(DB_PATH, query);
+    rows = queryDbJson(dbPath, query);
   } catch (err) {
     if (isSqliteUnavailableError(err)) throw sqliteUnavailableError('OpenCode');
     throw err;
@@ -48,7 +86,7 @@ function parseFromSqlite() {
     const timestamp = new Date(row.created);
     if (isNaN(timestamp.getTime())) continue;
 
-    const project = row.rootPath ? basename(row.rootPath) : 'unknown';
+    const project = resolveProject(row.rootPath, row.cwdPath);
     const sessionId = row.sessionID || 'unknown';
 
     sessionEvents.push({
@@ -119,7 +157,7 @@ function parseFromJson() {
       if (isNaN(timestamp.getTime())) continue;
 
       const rootPath = data.path?.root;
-      const project = rootPath ? basename(rootPath) : 'unknown';
+      const project = resolveProject(rootPath, data.path?.cwd);
 
       sessionEvents.push({
         sessionId: sessionDir.name,
