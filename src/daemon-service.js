@@ -47,8 +47,20 @@ export function npxLauncher(nodePath, exists = existsSync, os = platform()) {
   return exists(npxPath) ? { mode: 'npx', npxPath, nodeDir } : null;
 }
 
+// Homebrew's node lives at <prefix>/Cellar/node/<version>/bin/node — a versioned
+// path that disappears on `brew upgrade node && brew cleanup`, silently killing
+// the service. Prefer the stable <prefix>/bin/node symlink brew maintains.
+function stableNodePath(p) {
+  const m = p.match(/^(.+)[\\/]Cellar[\\/]node[\\/][^\\/]+[\\/]bin[\\/]node(\.exe)?$/);
+  if (m) {
+    const stable = p.replace(/[\\/]Cellar[\\/]node[\\/][^\\/]+([\\/]bin[\\/]node(\.exe)?)$/, '$1');
+    if (stable !== p && existsSync(stable)) return stable;
+  }
+  return p;
+}
+
 function resolvePaths() {
-  const nodePath = process.execPath;
+  const nodePath = stableNodePath(process.execPath);
   const thisFile = fileURLToPath(import.meta.url);
   const binPath = join(thisFile, '..', '..', 'bin', 'vibe-usage.js');
   const isNpxCache = isNpxCachePath(binPath);
