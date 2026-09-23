@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { withUnreadableFile } from '../test-support/file-permissions.js';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
@@ -16,14 +16,14 @@ function rows(session = 'ses_one', model = 'test-model') {
     { id: 'reply', sessionID: session, role: 'assistant', time: { created: start + 1000 },
       modelID: model, tokens: { input: 10, output: 3, reasoning: 1, cache: { read: 2 } }, path: { root: '/work/project' } }];
 }
-function sqlite(root, messages) {
+function sqlite(root, messages, name = 'opencode.db') {
   mkdirSync(root, { recursive: true });
   const quote = v => "'" + String(v).replaceAll("'", "''") + "'";
   const sql = 'CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);'
     + messages.map(m => `INSERT INTO message VALUES (${quote(m.id)},${quote(m.sessionID)},${quote(JSON.stringify(m))});`).join('');
   let DatabaseSync;
   try { ({ DatabaseSync } = require('node:sqlite')); } catch { /* Node 20 uses the CLI. */ }
-  const path = join(root, 'opencode.db');
+  const path = join(root, name);
   if (DatabaseSync) { const db = new DatabaseSync(path); try { db.exec(sql); } finally { db.close(); } }
   else execFileSync('sqlite3', [path], { input: sql });
 }
@@ -105,6 +105,30 @@ test('OpenCode SQLite precedence is per root, including an empty migrated databa
   const result = await parse({ extraRoots: [extra] });
   assert.equal(result.buckets[0].inputTokens, 10);
   assert.equal(result.sessions.length, 1);
+}));
+
+test('OpenCode discovers every opencode*.db sibling and ignores wal, foreign, and directory decoys', async () => fixture(async (root, primary) => {
+  sqlite(primary, rows());
+  sqlite(primary, rows('ses_two'), 'opencode-feature-branch.db');
+  writeFileSync(join(primary, 'opencode.db-wal'), 'ignore');
+  writeFileSync(join(primary, 'other.db'), 'ignore');
+  mkdirSync(join(primary, 'opencode-directory.db'));
+  const stores = getOpenCodeStores();
+  assert.deepEqual(stores.map(s => basename(s.path)).sort(), ['opencode-feature-branch.db', 'opencode.db']);
+  assert.equal((await parse()).sessions.length, 2);
+}));
+
+test('OpenCode sibling databases merge split history and keep the most complete copy', async () => fixture(async (root, primary) => {
+  sqlite(primary, rows());
+  const rotated = rows();
+  rotated[1] = { ...rotated[1], tokens: { input: 4, output: 1 } };
+  rotated.push({ ...rotated[1], id: 'reply-two', time: { created: start + 2000 },
+    tokens: { input: 10, output: 3, reasoning: 1, cache: { read: 2 } } });
+  sqlite(primary, rotated, 'opencode-rotated.db');
+  const result = await parse();
+  assert.equal(result.buckets[0].inputTokens, 20);
+  assert.equal(result.buckets[0].cachedInputTokens, 4);
+  assert.equal(result.sessions[0].messageCount, 3);
 }));
 
 test('OpenCode missing configured roots and corrupt stores suppress partial uploads', async () => fixture(async (root, primary) => {

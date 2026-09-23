@@ -1,7 +1,7 @@
 import { accessSync, closeSync, constants, openSync, readSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
-import { openCodeStore } from './opencode-roots.js';
+import { openCodeStores } from './opencode-roots.js';
 import { codexSessionDirs } from './codex-roots.js';
 
 export const EXTRA_ROOT_SOURCES = ['antigravity', 'claude-code', 'codex', 'grok', 'opencode', 'pi-coding-agent'];
@@ -307,8 +307,8 @@ export function validateExtraRoot(source, value) {
   }
   if (source === 'opencode') {
     try {
-      return { ok: openCodeStore(path) !== null, path,
-        reason: '需要包含可读的 opencode.db 或 storage/message/' };
+      return { ok: openCodeStores(path).length > 0, path,
+        reason: '需要包含可读的 opencode*.db 或 storage/message/' };
     } catch (err) {
       return { ok: false, path, reason: `无法读取 OpenCode 目录: ${err.message}` };
     }
