@@ -258,3 +258,24 @@ test('installed mode is read back correctly from every generated unit form', () 
   assert.equal(installedModeFromText(generateWindowsTaskCmd('C:\\nodejs\\node.exe', 'C:\\x\\bin.js', undefined, {}, winLauncher)), 'npx');
   assert.equal(installedModeFromText(generateWindowsTaskCmd('C:\\nodejs\\node.exe', 'C:\\x\\bin.js', undefined, {})), 'pinned');
 });
+
+test('services preserve ELECTRON_RUN_AS_NODE for Electron-bundled installs', () => {
+  const env = { ELECTRON_RUN_AS_NODE: '1' };
+  assert.match(
+    generateLaunchdPlist('/Applications/Vibe Usage Desktop.app/Contents/MacOS/Vibe Usage Desktop', '/app/cli/bin/vibe-usage.js', undefined, env),
+    /<key>ELECTRON_RUN_AS_NODE<\/key>\s*<string>1<\/string>/,
+  );
+  assert.match(
+    generateSystemdUnit('/opt/vibe-desktop/vibe', '/app/cli/bin/vibe-usage.js', undefined, env),
+    /Environment="ELECTRON_RUN_AS_NODE=1"/,
+  );
+  assert.match(
+    generateWindowsTaskCmd('C:\\Apps\\Vibe Usage Desktop.exe', 'C:\\app\\cli\\bin\\vibe-usage.js', undefined, env),
+    /set "ELECTRON_RUN_AS_NODE=1"/,
+  );
+  // Plain installs must not record it.
+  assert.doesNotMatch(
+    generateWindowsTaskCmd('C:\\nodejs\\node.exe', 'C:\\x\\bin.js', undefined, {}),
+    /ELECTRON_RUN_AS_NODE/,
+  );
+});
