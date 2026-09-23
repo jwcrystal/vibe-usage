@@ -127,6 +127,10 @@ const PRESERVED_SERVICE_ENV = [
   'XDG_DATA_HOME',
   'PI_CODING_AGENT_DIR',
   'PI_CODING_AGENT_SESSION_DIR',
+  // When the CLI itself runs via Electron (ELECTRON_RUN_AS_NODE=1, e.g. from a
+  // desktop app bundling it), process.execPath is the Electron binary and only
+  // works as Node with this variable — the service must replay it.
+  'ELECTRON_RUN_AS_NODE',
 ];
 
 function serviceEnvironment(claudeConfigDir, env) {
