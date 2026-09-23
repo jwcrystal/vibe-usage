@@ -321,13 +321,17 @@ function run(cmd, args) {
 }
 
 function runPowerShell(script) {
+  // Force UTF-8 on both directions: Windows PowerShell 5.x otherwise pipes in
+  // the OEM codepage (GBK/CP950 on Chinese systems), and Node decodes the
+  // bytes as UTF-8 — error messages turn into mojibake that hides the real
+  // failure from `daemon status`/`uninstall` output.
   return run('powershell.exe', [
     '-NoProfile',
     '-NonInteractive',
     '-ExecutionPolicy',
     'Bypass',
     '-Command',
-    script,
+    '[Console]::InputEncoding=[Console]::OutputEncoding=[Text.Encoding]::UTF8; ' + script,
   ]);
 }
 
