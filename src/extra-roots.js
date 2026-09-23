@@ -308,9 +308,9 @@ export function validateExtraRoot(source, value) {
   if (source === 'opencode') {
     try {
       return { ok: openCodeStores(path).length > 0, path,
-        reason: '需要包含可读的 opencode*.db 或 storage/message/' };
+        reason: '需要包含可讀的 opencode*.db 或 storage/message/' };
     } catch (err) {
-      return { ok: false, path, reason: `无法读取 OpenCode 目录: ${err.message}` };
+      return { ok: false, path, reason: `無法讀取 OpenCode 目錄: ${err.message}` };
     }
   }
   if (source === 'pi-coding-agent') {

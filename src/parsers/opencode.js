@@ -63,7 +63,7 @@ export async function parse({ extraRoots = [] } = {}) {
         const old = records.get(key);
         if (!old || tokenSize(row) > tokenSize(old)) records.set(key, { ...row, timestamp, sessionId });
       }
-    } catch (err) { warnings.push(`OpenCode: 无法读取 ${store.path}: ${err.message}`); }
+    } catch (err) { warnings.push(`OpenCode: 無法讀取 ${store.path}: ${err.message}`); }
   }
   if (warnings.length) return { buckets: [], sessions: [], skipped: true, warnings };
 

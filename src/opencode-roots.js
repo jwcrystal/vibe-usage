@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 function readable(path, directory) {
   try {
     const stat = statSync(path);
-    if (directory ? !stat.isDirectory() : !stat.isFile()) throw new Error(`格式不正确: ${path}`);
+    if (directory ? !stat.isDirectory() : !stat.isFile()) throw new Error(`格式不正確: ${path}`);
     accessSync(path, constants.R_OK);
     return true;
   } catch (err) {
@@ -52,7 +52,7 @@ export function getOpenCodeStores({ extraRoots = [], onWarning = () => {} } = {}
     try {
       const found = openCodeStores(root);
       if (found.length === 0 && extraRoots.includes(root)) {
-        onWarning(`OpenCode: 额外目录缺少 opencode.db 或 storage/message/: ${root}`);
+        onWarning(`OpenCode: 額外目錄缺少 opencode.db 或 storage/message/: ${root}`);
       }
       for (const store of found) {
         const canonical = realpathSync(store.path);
@@ -60,7 +60,7 @@ export function getOpenCodeStores({ extraRoots = [], onWarning = () => {} } = {}
         seen.add(canonical);
         stores.push({ ...store, path: canonical });
       }
-    } catch (err) { onWarning(`OpenCode: 无法读取数据目录 ${root}: ${err.message}`); }
+    } catch (err) { onWarning(`OpenCode: 無法讀取資料目錄 ${root}: ${err.message}`); }
   }
   return stores;
 }
