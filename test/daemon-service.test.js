@@ -211,7 +211,7 @@ test('systemd unit in npx mode runs npx --yes @latest with node on PATH and a sl
 test('systemd unit without a launcher is byte-for-byte the pinned form', () => {
   const unit = generateSystemdUnit('/usr/bin/node', '/opt/vibe-usage/bin.js', undefined, {});
   assert.match(unit, /ExecStart=\/usr\/bin\/node \/opt\/vibe-usage\/bin\.js daemon/);
-  assert.match(unit, /RestartSec=10/);
+  assert.match(unit, /RestartSec=60/);
   assert.doesNotMatch(unit, /PATH=/);
 });
 
@@ -223,10 +223,10 @@ test('launchd plist in npx mode runs npx --yes @latest, sets PATH, and throttles
   assert.doesNotMatch(plist, /_npx/);
 });
 
-test('launchd plist without a launcher keeps the pinned invocation and no throttle', () => {
+test('launchd plist without a launcher keeps the pinned invocation and still throttles', () => {
   const plist = generateLaunchdPlist('/usr/bin/node', '/opt/vibe-usage/bin.js', undefined, {});
   assert.match(plist, /<string>\/usr\/bin\/node<\/string>\s*<string>\/opt\/vibe-usage\/bin\.js<\/string>\s*<string>daemon<\/string>/);
-  assert.doesNotMatch(plist, /ThrottleInterval/);
+  assert.match(plist, /<key>ThrottleInterval<\/key>\s*<integer>60<\/integer>/);
   assert.doesNotMatch(plist, /<key>PATH<\/key>/);
 });
 

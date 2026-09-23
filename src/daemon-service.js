@@ -153,8 +153,9 @@ export function generateSystemdUnit(
   const environment = serviceEnvironment(claudeConfigDir, env)
     .map(([key, value]) => `Environment="${key}=${escapeSystemdEnvironment(value)}"\n`)
     .join('');
-  // npx mode needs the registry at start; RestartSec=60 keeps an offline boot
-  // from turning into a restart storm.
+  // RestartSec=60 for all modes: a deleted/moved binary (e.g. an uninstalled
+  // desktop app that bundled the CLI) must not become a restart storm, and the
+  // daemon's 30m sync cadence makes a 60s respawn delay free.
   return `[Unit]
 Description=VibeCafe Usage Tracker
 After=network.target
@@ -163,7 +164,7 @@ After=network.target
 Type=simple
 ExecStart=${serviceArgv(nodePath, binPath, launcher).join(' ')}
 Restart=on-failure
-RestartSec=${npx ? 60 : 10}
+RestartSec=60
 Environment=NODE_ENV=production
 ${pathLine}${environment}WorkingDirectory=${homedir()}
 
@@ -190,9 +191,11 @@ export function generateLaunchdPlist(
   const environment = serviceEnvironment(claudeConfigDir, env)
     .map(([key, value]) => `        <key>${key}</key>\n        <string>${escapeXml(value)}</string>\n`)
     .join('');
-  // ThrottleInterval only matters in npx mode: an offline boot makes npx exit
-  // non-zero and KeepAlive would otherwise relaunch it every 10 seconds.
-  const throttle = npx ? `    <key>ThrottleInterval</key>\n    <integer>60</integer>\n` : '';
+  // ThrottleInterval applies to every mode now: KeepAlive otherwise relaunches
+  // every ~10s — harmless for a transient crash, but a deleted/moved binary
+  // (uninstalled app bundle, removed global install) turns it into an endless
+  // relaunch loop. The daemon syncs every 30m, so a 60s respawn delay is free.
+  const throttle = `    <key>ThrottleInterval</key>\n    <integer>60</integer>\n`;
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
