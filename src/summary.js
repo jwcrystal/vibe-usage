@@ -127,8 +127,13 @@ function topN(map, sortBy, n) {
     .slice(0, n);
 }
 
+// Compact token counts, K→M→B→T (matches the dashboard's fmtTok). Values that
+// would display as "1000K"-style rollovers bump to the next tier (CLDR behavior).
 function formatTokens(n) {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
-  if (n >= 1_000) return (n / 1_000).toFixed(0) + 'K';
-  return String(n);
+  n = n || 0;
+  const units = ['', 'K', 'M', 'B', 'T'];
+  let i = 0;
+  while (n >= 1000 && i < units.length - 1) { n /= 1000; i += 1; }
+  if (i > 0 && i < units.length - 1 && n >= 999.5) { n /= 1000; i += 1; }
+  return i === 0 ? String(n) : n.toFixed(i === 1 ? 0 : 1) + units[i];
 }
