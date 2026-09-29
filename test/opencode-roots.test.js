@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { withUnreadableFile } from '../test-support/file-permissions.js';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -27,6 +27,18 @@ function sqlite(root, messages, name = 'opencode.db') {
   if (DatabaseSync) { const db = new DatabaseSync(path); try { db.exec(sql); } finally { db.close(); } }
   else execFileSync('sqlite3', [path], { input: sql });
 }
+function addV2Rows(root, sessions, messages) {
+  const quote = v => v == null ? 'NULL' : `'${String(v).replaceAll("'", "''")}'`;
+  const sql = 'CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT);'
+    + 'CREATE TABLE session_message (id TEXT, session_id TEXT, type TEXT, seq INTEGER, time_created INTEGER, time_updated INTEGER, data TEXT);'
+    + sessions.map(s => `INSERT INTO session_v2 VALUES (${quote(s.id)},${quote(s.directory)});`).join('')
+    + messages.map(m => `INSERT INTO session_message VALUES (${quote(m.id)},${quote(m.sessionID)},${quote(m.type)},${m.seq},${m.created},${m.created},${quote(JSON.stringify(m.data))});`).join('');
+  const path = join(root, 'opencode.db');
+  let DatabaseSync;
+  try { ({ DatabaseSync } = require('node:sqlite')); } catch { /* Node 20 uses the CLI. */ }
+  if (DatabaseSync) { const db = new DatabaseSync(path); try { db.exec(sql); } finally { db.close(); } }
+  else execFileSync('sqlite3', [path], { input: sql });
+}
 function json(root, messages) {
   mkdirSync(join(root, 'storage', 'message'), { recursive: true });
   for (const m of messages) {
@@ -38,11 +50,15 @@ function json(root, messages) {
 async function fixture(run) {
   const root = mkdtempSync(join(tmpdir(), 'opencode-roots-'));
   const old = process.env.VIBE_USAGE_OPENCODE_DIRS;
+  const oldDb = process.env.OPENCODE_DB;
   process.env.VIBE_USAGE_OPENCODE_DIRS = join(root, 'default');
+  delete process.env.OPENCODE_DB;
   try { await run(root, join(root, 'default')); }
   finally {
     if (old === undefined) delete process.env.VIBE_USAGE_OPENCODE_DIRS;
     else process.env.VIBE_USAGE_OPENCODE_DIRS = old;
+    if (oldDb === undefined) delete process.env.OPENCODE_DB;
+    else process.env.OPENCODE_DB = oldDb;
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -66,6 +82,37 @@ test('OpenCode combines default SQLite and extra SQLite raw rows exactly once', 
   assert.equal(result.buckets[0].reasoningOutputTokens, 2);
   assert.equal(result.sessions.length, 2);
   assert.deepEqual(await parse({ extraRoots: [extra] }), result);
+}));
+
+test('OpenCode reads V2 message usage and deduplicates migrated V1 message identities', async () => fixture(async (root, primary) => {
+  const legacy = rows();
+  for (const message of legacy) message.path.root = '/';
+  sqlite(primary, legacy);
+  addV2Rows(primary, [{ id: 'ses_one', directory: '/work/project' }], [
+    { id: 'user', sessionID: 'ses_one', type: 'user', seq: 0, created: start,
+      data: { time: { created: start }, agent: 'build' } },
+    { id: 'reply', sessionID: 'ses_one', type: 'assistant', seq: 1, created: start + 1000,
+      data: { time: { created: start + 1000 },
+        tokens: { input: 10, output: 3, reasoning: 1, cache: { read: 2, write: 5 } } } },
+    { id: 'user-two', sessionID: 'ses_one', type: 'user', seq: 2, created: start + 2000,
+      data: { time: { created: start + 2000 }, agent: 'build' } },
+    { id: 'reply-two', sessionID: 'ses_one', type: 'assistant', seq: 3, created: start + 3000,
+      data: { time: { created: start + 3000 }, model: { id: 'glm-5.3', providerID: 'zai-coding-plan' },
+        tokens: { input: 6, output: 4, reasoning: 3, cache: { read: 2, write: 5 } } } },
+    { id: 'reply-write-only', sessionID: 'ses_one', type: 'assistant', seq: 4, created: start + 4000,
+      data: { time: { created: start + 4000 }, model: { id: 'glm-5.3', providerID: 'zai-coding-plan' },
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 7 } } } },
+  ]);
+
+  const result = await parse();
+  assert.deepEqual(result.buckets.map(({ model, project, inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens, cacheCreation5mTokens }) =>
+    ({ model, project, inputTokens, outputTokens, cachedInputTokens, reasoningOutputTokens, cacheCreation5mTokens })), [
+    { model: 'test-model', project: 'project', inputTokens: 10, outputTokens: 3, cachedInputTokens: 2, reasoningOutputTokens: 1, cacheCreation5mTokens: 5 },
+    { model: 'glm-5.3', project: 'project', inputTokens: 6, outputTokens: 4, cachedInputTokens: 2, reasoningOutputTokens: 3, cacheCreation5mTokens: 12 },
+  ]);
+  assert.equal(result.sessions.length, 1);
+  assert.equal(result.sessions[0].userMessageCount, 2);
+  assert.equal(result.sessions[0].messageCount, 5);
 }));
 
 test('OpenCode merges SQLite and JSON stores and preserves top-level model precedence', async () => fixture(async (root, primary) => {
@@ -116,6 +163,51 @@ test('OpenCode discovers every opencode*.db sibling and ignores wal, foreign, an
   const stores = getOpenCodeStores();
   assert.deepEqual(stores.map(s => basename(s.path)).sort(), ['opencode-feature-branch.db', 'opencode.db']);
   assert.equal((await parse()).sessions.length, 2);
+}));
+
+test('OpenCode reads the OPENCODE_DB override instead of the default database', async () => fixture(async (root, primary) => {
+  sqlite(primary, rows('ses_stale', 'stale-model'));
+  const active = join(root, 'custom-location', 'active.sqlite');
+  sqlite(join(root, 'custom-location'), rows('ses_active', 'active-model'), 'active.sqlite');
+  process.env.OPENCODE_DB = active;
+  const stores = getOpenCodeStores();
+  assert.ok(stores.some(store => store.kind === 'sqlite' && store.path === realpathSync(active)));
+  const result = await parse();
+  assert.deepEqual(result.buckets.map(bucket => bucket.model), ['active-model']);
+  assert.equal(result.sessions.length, 1);
+}));
+
+test('OpenCode active database override takes precedence over legacy JSON in its directory', async () => fixture(async (root, primary) => {
+  json(primary, rows());
+  sqlite(primary, [], 'active.sqlite');
+  process.env.OPENCODE_DB = join(primary, 'active.sqlite');
+  const result = await parse();
+  assert.deepEqual(result.buckets, []);
+  assert.deepEqual(result.sessions, []);
+}));
+
+test('OpenCode missing OPENCODE_DB override protects prior upload state', async () => fixture(async (root, primary) => {
+  sqlite(primary, rows());
+  process.env.OPENCODE_DB = join(root, 'missing', 'active.sqlite');
+  const result = await parse();
+  assert.equal(result.skipped, true);
+  assert.ok(result.warnings.some(message => message.includes('無法讀取資料庫')));
+  assert.deepEqual(result.buckets, []);
+}));
+
+test('OpenCode unsupported SQLite schema protects prior upload state', async () => fixture(async (root, primary) => {
+  sqlite(primary, []);
+  const path = join(primary, 'opencode.db');
+  const sql = 'DROP TABLE message; CREATE TABLE unrelated (id TEXT);';
+  let DatabaseSync;
+  try { ({ DatabaseSync } = require('node:sqlite')); } catch { /* Node 20 uses the CLI. */ }
+  if (DatabaseSync) { const db = new DatabaseSync(path); try { db.exec(sql); } finally { db.close(); } }
+  else execFileSync('sqlite3', [path], { input: sql });
+
+  const result = await parse();
+  assert.equal(result.skipped, true);
+  assert.ok(result.warnings.some(message => message.includes('支援的資料表')));
+  assert.deepEqual(result.buckets, []);
 }));
 
 test('OpenCode sibling databases merge split history and keep the most complete copy', async () => fixture(async (root, primary) => {

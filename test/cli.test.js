@@ -383,6 +383,7 @@ test('Claude Code and OpenCode added roots route from saved config into their pa
     role: 'assistant', time: { created: 1789171200000 }, modelID: 'test-model', tokens: { input: 10, output: 2 } }));
   const env = { ...process.env, VIBE_USAGE_CONFIG_DIR: configDir,
     VIBE_USAGE_CLAUDE_DIRS: join(root, 'no-default-claude'), VIBE_USAGE_OPENCODE_DIRS: join(root, 'no-default-opencode') };
+  delete env.OPENCODE_DB;
   try {
     for (const [source, path] of [['claude-code', claude], ['opencode', opencode]]) {
       const result = runWithEnv(['config', 'add-root', source, path], env);

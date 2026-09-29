@@ -1,5 +1,5 @@
 import { accessSync, constants, readdirSync, realpathSync, statSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 function readable(path, directory) {
@@ -45,10 +45,19 @@ export function openCodeStores(root) {
 
 export function getOpenCodeStores({ extraRoots = [], onWarning = () => {} } = {}) {
   const override = process.env.VIBE_USAGE_OPENCODE_DIRS?.trim();
+  const databaseOverride = process.env.OPENCODE_DB?.trim();
   const defaults = override ? override.split(delimiter).map(p => p.trim()).filter(Boolean)
     : [join(homedir(), '.local', 'share', 'opencode')];
   const seen = new Set(), stores = [];
-  for (const root of [...defaults, ...extraRoots]) {
+  let activeDatabase;
+  if (databaseOverride) {
+    try {
+      if (!readable(databaseOverride, false)) throw new Error(`資料庫不存在: ${databaseOverride}`);
+      activeDatabase = realpathSync(databaseOverride);
+    } catch (err) { onWarning(`OpenCode: 無法讀取資料庫 ${databaseOverride}: ${err.message}`); }
+  }
+  const roots = databaseOverride ? extraRoots : [...defaults, ...extraRoots];
+  for (const root of roots) {
     try {
       const found = openCodeStores(root);
       if (found.length === 0 && extraRoots.includes(root)) {
@@ -56,11 +65,17 @@ export function getOpenCodeStores({ extraRoots = [], onWarning = () => {} } = {}
       }
       for (const store of found) {
         const canonical = realpathSync(store.path);
+        if (store.kind === 'json' && activeDatabase
+          && realpathSync(dirname(dirname(store.path))) === dirname(activeDatabase)) continue;
         if (seen.has(canonical)) continue;
         seen.add(canonical);
         stores.push({ ...store, path: canonical });
       }
     } catch (err) { onWarning(`OpenCode: 無法讀取資料目錄 ${root}: ${err.message}`); }
+  }
+  if (activeDatabase && !seen.has(activeDatabase)) {
+    seen.add(activeDatabase);
+    stores.push({ kind: 'sqlite', path: activeDatabase });
   }
   return stores;
 }
