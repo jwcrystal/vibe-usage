@@ -79,7 +79,7 @@ export function render(data, days, apiUrl) {
   const lines = [];
   lines.push(`# Vibe Usage Summary (Last ${days} ${days === 1 ? 'day' : 'days'})`);
   lines.push('');
-  lines.push(`**总览**: $${totalCost.toFixed(2)} · ${formatTokens(totalTokens)} tokens · ${sessionsCount} sessions · ${activeHours.toFixed(1)}h active`);
+  lines.push(`**总览**: ${formatCost(totalCost)} · ${formatTokens(totalTokens)} tokens · ${sessionsCount} sessions · ${activeHours.toFixed(1)}h active`);
   lines.push('');
 
   lines.push('## 按工具');
@@ -88,7 +88,7 @@ export function render(data, days, apiUrl) {
   lines.push('|---|---:|---:|---:|');
   for (const [source, { cost, tokens }] of topN(bySource, 'cost', 8)) {
     const pct = totalCost > 0 ? ((cost / totalCost) * 100).toFixed(0) : '0';
-    lines.push(`| ${TOOL_NAMES.get(source) || source} | $${cost.toFixed(2)} | ${formatTokens(tokens)} | ${pct}% |`);
+    lines.push(`| ${TOOL_NAMES.get(source) || source} | ${formatCost(cost)} | ${formatTokens(tokens)} | ${pct}% |`);
   }
   lines.push('');
 
@@ -98,7 +98,7 @@ export function render(data, days, apiUrl) {
   lines.push('|---|---:|---:|---:|');
   for (const [model, { cost, tokens }] of topN(byModel, 'cost', 8)) {
     const pct = totalCost > 0 ? ((cost / totalCost) * 100).toFixed(0) : '0';
-    lines.push(`| ${model} | $${cost.toFixed(2)} | ${formatTokens(tokens)} | ${pct}% |`);
+    lines.push(`| ${model} | ${formatCost(cost)} | ${formatTokens(tokens)} | ${pct}% |`);
   }
   lines.push('');
 
@@ -107,7 +107,7 @@ export function render(data, days, apiUrl) {
   lines.push('| 项目 | 费用 | Sessions |');
   lines.push('|---|---:|---:|');
   for (const [project, { cost, sessions: ss }] of topN(byProject, 'cost', 8)) {
-    lines.push(`| ${project} | $${cost.toFixed(2)} | ${ss} |`);
+    lines.push(`| ${project} | ${formatCost(cost)} | ${ss} |`);
   }
   lines.push('');
 
@@ -136,4 +136,10 @@ function formatTokens(n) {
   while (n >= 1000 && i < units.length - 1) { n /= 1000; i += 1; }
   if (i > 0 && i < units.length - 1 && n >= 999.5) { n /= 1000; i += 1; }
   return i === 0 ? String(n) : n.toFixed(i === 1 ? 0 : 1) + units[i];
+}
+
+// Adaptive precision: sub-dollar amounts keep 4 decimals so sub-cent costs
+// don't collapse to "$0.00"; >= $1 uses standard 2 decimals.
+function formatCost(n) {
+  return '$' + (n >= 1 ? n.toFixed(2) : n.toFixed(4));
 }
