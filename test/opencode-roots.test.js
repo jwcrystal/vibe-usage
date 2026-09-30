@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { withUnreadableFile } from '../test-support/file-permissions.js';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -23,11 +23,11 @@ function execSql(path, sql) {
   else execFileSync('sqlite3', [path], { input: sql });
 }
 function quoteSql(value) { return "'" + String(value).replaceAll("'", "''") + "'"; }
-function sqlite(root, messages) {
+function sqlite(root, messages, name = 'opencode.db') {
   mkdirSync(root, { recursive: true });
   const sql = 'CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, data TEXT);'
     + messages.map(m => `INSERT INTO message VALUES (${quoteSql(m.id)},${quoteSql(m.sessionID)},${quoteSql(JSON.stringify(m))});`).join('');
-  execSql(join(root, 'opencode.db'), sql);
+  execSql(join(root, name), sql);
 }
 // OpenCode 2.x layout: usage lives in the session_message projection, the
 // project directory in the session row, and there is no legacy message table.
@@ -51,11 +51,15 @@ function json(root, messages) {
 async function fixture(run) {
   const root = mkdtempSync(join(tmpdir(), 'opencode-roots-'));
   const old = process.env.VIBE_USAGE_OPENCODE_DIRS;
+  const oldDb = process.env.OPENCODE_DB;
   process.env.VIBE_USAGE_OPENCODE_DIRS = join(root, 'default');
+  delete process.env.OPENCODE_DB;
   try { await run(root, join(root, 'default')); }
   finally {
     if (old === undefined) delete process.env.VIBE_USAGE_OPENCODE_DIRS;
     else process.env.VIBE_USAGE_OPENCODE_DIRS = old;
+    if (oldDb === undefined) delete process.env.OPENCODE_DB;
+    else process.env.OPENCODE_DB = oldDb;
     rmSync(root, { recursive: true, force: true });
   }
 }
@@ -222,4 +226,34 @@ test('OpenCode names an unreadable store shape instead of reporting a missing ta
   assert.equal(result.skipped, true);
   assert.deepEqual(result.buckets, []);
   assert.match(result.warnings[0], /不认识的表结构/);
+}));
+
+test('OpenCode reads the OPENCODE_DB override instead of the default database', async () => fixture(async (root, primary) => {
+  sqlite(primary, rows('ses_stale', 'stale-model'));
+  const active = join(root, 'custom-location', 'active.sqlite');
+  sqlite(join(root, 'custom-location'), rows('ses_active', 'active-model'), 'active.sqlite');
+  process.env.OPENCODE_DB = active;
+  const stores = getOpenCodeStores();
+  assert.ok(stores.some(store => store.kind === 'sqlite' && store.path === realpathSync(active)));
+  const result = await parse();
+  assert.deepEqual(result.buckets.map(bucket => bucket.model), ['active-model']);
+  assert.equal(result.sessions.length, 1);
+}));
+
+test('OpenCode active database override takes precedence over legacy JSON in its directory', async () => fixture(async (root, primary) => {
+  json(primary, rows());
+  sqlite(primary, [], 'active.sqlite');
+  process.env.OPENCODE_DB = join(primary, 'active.sqlite');
+  const result = await parse();
+  assert.deepEqual(result.buckets, []);
+  assert.deepEqual(result.sessions, []);
+}));
+
+test('OpenCode missing OPENCODE_DB override protects prior upload state', async () => fixture(async (root, primary) => {
+  sqlite(primary, rows());
+  process.env.OPENCODE_DB = join(root, 'missing', 'active.sqlite');
+  const result = await parse();
+  assert.equal(result.skipped, true);
+  assert.ok(result.warnings.some(message => message.includes('無法讀取資料庫')));
+  assert.deepEqual(result.buckets, []);
 }));
