@@ -3,3 +3,5 @@ node_modules/
 .env.local
 *.tgz
 .DS_Store
+.commandcode/
+.opencode/
