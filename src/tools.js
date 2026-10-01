@@ -274,6 +274,12 @@ export function getCodebuddyRoots(env = process.env, home = homedir()) {
   return [env.CODEBUDDY_CONFIG_DIR?.trim() || join(home, '.codebuddy')];
 }
 
+export function getCommandcodeRoots(env = process.env, home = homedir()) {
+  const override = env.VIBE_USAGE_COMMANDCODE_DIRS?.trim();
+  if (override) return override.split(delimiter).map(value => value.trim()).filter(Boolean);
+  return [join(home, '.commandcode')];
+}
+
 export function getZcodeDbPath(env = process.env, home = homedir()) {
   const override = env.VIBE_USAGE_ZCODE_DB?.trim();
   if (override) return isAbsolute(override) ? override : resolve(override);
@@ -384,6 +390,12 @@ export const TOOLS = [
     id: 'cola',
     dataDir: getColaSessionsDir(),
     detectDataDirs: findColaDataDirs,
+  },
+  {
+    name: 'Command Code',
+    id: 'commandcode',
+    dataDir: join(getCommandcodeRoots()[0], 'projects'),
+    detectDataDirs: () => getCommandcodeRoots().map(root => join(root, 'projects')).filter(existsSync),
   },
   {
     name: 'Grok',

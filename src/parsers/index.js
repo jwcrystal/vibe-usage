@@ -2,6 +2,7 @@ import { parse as parseClaudeCode } from './claude-code.js';
 import { parse as parseCline } from './cline.js';
 import { parse as parseCodeartsAgent } from './codearts-agent.js';
 import { parse as parseCodex } from './codex.js';
+import { parse as parseCommandcode } from './commandcode.js';
 import { parse as parseCopilotCli } from './copilot-cli.js';
 import { parse as parseCraftAgent } from './craft-agent.js';
 import { parse as parseCursor } from './cursor.js';
@@ -36,6 +37,7 @@ export const parsers = {
   'claude-code': parseClaudeCode,
   'codearts-agent': parseCodeartsAgent,
   'codex': parseCodex,
+  'commandcode': parseCommandcode,
   'cola': parseCola,
   'grok': parseGrok,
   'copilot-cli': parseCopilotCli,
