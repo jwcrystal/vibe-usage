@@ -64,6 +64,34 @@ async function fixture(run) {
   }
 }
 
+test('OpenCode discovers XDG_DATA_HOME SQLite and legacy stores using native paths', async () => fixture(async (root, primary) => {
+  const oldXdg = process.env.XDG_DATA_HOME;
+  const dataHome = join(root, 'custom data');
+  const store = join(dataHome, 'opencode');
+  process.env.XDG_DATA_HOME = dataHome;
+  delete process.env.VIBE_USAGE_OPENCODE_DIRS;
+  try {
+    json(store, rows());
+    assert.deepEqual(getOpenCodeStores(), [{ kind: 'json', path: realpathSync(join(store, 'storage', 'message')) }]);
+    assert.equal((await parse()).buckets[0].inputTokens, 10);
+    sqlite(store, rows());
+    assert.deepEqual(getOpenCodeStores(), [{ kind: 'sqlite', path: realpathSync(join(store, 'opencode.db')) }]);
+    assert.equal((await parse()).buckets[0].inputTokens, 10);
+
+    // An explicit directory override still replaces normal machine discovery.
+    process.env.VIBE_USAGE_OPENCODE_DIRS = primary;
+    json(primary, rows('ses_override'));
+    assert.deepEqual(getOpenCodeStores(), [{ kind: 'json', path: realpathSync(join(primary, 'storage', 'message')) }]);
+
+    // An explicit database remains authoritative even with XDG configured.
+    process.env.OPENCODE_DB = join(store, 'opencode.db');
+    assert.deepEqual(getOpenCodeStores(), [{ kind: 'sqlite', path: realpathSync(join(store, 'opencode.db')) }]);
+  } finally {
+    if (oldXdg === undefined) delete process.env.XDG_DATA_HOME;
+    else process.env.XDG_DATA_HOME = oldXdg;
+  }
+}));
+
 test('OpenCode validates SQLite and legacy layouts without throwing on absent paths', async () => fixture(async root => {
   const db = join(root, 'db'), old = join(root, 'json');
   sqlite(db, []); json(old, []);

@@ -27,8 +27,10 @@ export function openCodeStore(root) {
 export function getOpenCodeStores({ extraRoots = [], onWarning = () => {} } = {}) {
   const override = process.env.VIBE_USAGE_OPENCODE_DIRS?.trim();
   const databaseOverride = process.env.OPENCODE_DB?.trim();
+  // OpenCode uses xdg-basedir on every OS, including Windows. Do not substitute
+  // APPDATA: its data root is XDG_DATA_HOME or <home>/.local/share.
   const defaults = override ? override.split(delimiter).map(p => p.trim()).filter(Boolean)
-    : [join(homedir(), '.local', 'share', 'opencode')];
+    : [join(process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share'), 'opencode')];
   const seen = new Set(), stores = [];
   // OPENCODE_DB points at one authoritative database (e.g. a rotated or
   // relocated opencode database outside the default roots). While it is set,
