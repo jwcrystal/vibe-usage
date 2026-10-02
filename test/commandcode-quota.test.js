@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { discoverQuotaProducts, fetchQuotaProducts } from '../src/quotas/registry.js';
+import { quotaResult } from '../src/quotas/schema.js';
 import {
   commandcodeAuthPath,
   fetchCommandcodeQuota,
@@ -181,13 +182,15 @@ test('Command Code fetch reads only apiKey, calls the four documented endpoints,
     assert.equal(result.dataAsOf, '2026-10-02T10:00:00.000Z');
     assert.deepEqual(result.meters, [
       { id: 'five-hour', label: '5h', utilization: 42,
-        windowSeconds: 18_000, resetsAt: '2026-10-02T15:00:00.000Z' },
+        windowSeconds: 18_000, resetsAt: '2026-10-02T15:00:00.000Z',
+        amountUsed: 42, amountLimit: 100 },
       { id: 'weekly', label: '7d', utilization: 30,
-        windowSeconds: 604_800, resetsAt: '2026-10-05T00:00:00.000Z' },
+        windowSeconds: 604_800, resetsAt: '2026-10-05T00:00:00.000Z',
+        amountUsed: 30, amountLimit: 100 },
       // Monthly: spent 40 / (remaining 60 + spent 40) = 40%, renewal from the
       // subscription's currentPeriodEnd, no fixed duration for a calendar month.
       { id: 'monthly', label: 'Month', utilization: 40,
-        resetsAt: '2026-11-01T00:00:00.000Z' },
+        resetsAt: '2026-11-01T00:00:00.000Z', amountUsed: 40, amountLimit: 100 },
     ]);
 
     // No key material, identity, org, or subscription ids reach the result,
@@ -501,14 +504,28 @@ test('projection reads only the documented paths and emits generated identities'
   // Canceled subscription: no plan label (never resurrected).
   assert.equal(planLabel, undefined);
   assert.deepEqual(meters, [
-    { id: 'weekly', label: '7d', utilization: 25, windowSeconds: 604_800 },
-    { id: 'monthly', label: 'Month', utilization: 50 },
+    { id: 'weekly', label: '7d', utilization: 25, windowSeconds: 604_800,
+      amountUsed: 1, amountLimit: 4 },
+    { id: 'monthly', label: 'Month', utilization: 50, amountUsed: 1, amountLimit: 2 },
   ]);
   const serialized = JSON.stringify({ meters, planLabel });
   for (const secret of ['Identity Name', 'identity@example.test', 'org_12345',
     'leak-id', 'Identity Org', 'Identity Plan Name', 'user-identity-uuid']) {
     assert.equal(serialized.includes(secret), false, secret);
   }
+});
+
+test('meter dollar amounts travel paired and stay non-negative over a positive cap', () => {
+  assert.throws(() => quotaResult({ id: 'commandcode', status: 'ok',
+    meters: [{ id: 'monthly', label: 'Month', utilization: 1, amountUsed: -1, amountLimit: 2 }] }));
+  assert.throws(() => quotaResult({ id: 'commandcode', status: 'ok',
+    meters: [{ id: 'monthly', label: 'Month', utilization: 1, amountUsed: 1, amountLimit: 0 }] }));
+  assert.throws(() => quotaResult({ id: 'commandcode', status: 'ok',
+    meters: [{ id: 'monthly', label: 'Month', utilization: 1, amountUsed: 1 }] }));
+  const ok = quotaResult({ id: 'commandcode', status: 'ok',
+    meters: [{ id: 'monthly', label: 'Month', utilization: 1, amountUsed: 0, amountLimit: 70 }] });
+  assert.equal(ok.meters[0].amountUsed, 0);
+  assert.equal(ok.meters[0].amountLimit, 70);
 });
 
 test('plan labels come from the allowlisted planId vocabulary only', () => {

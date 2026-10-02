@@ -81,6 +81,17 @@ export function normalizeMeter(raw, index = 0) {
     const seconds = finiteNumber(raw.windowSeconds, `meters[${index}].windowSeconds`);
     if (seconds > 0) meter.windowSeconds = seconds;
   }
+  // Optional dollar amount pair (USD, e.g. Command Code's window cap and
+  // monthly credit pool). The two sides only travel together: a used without
+  // a limit would invite the UI to invent one.
+  if (raw.amountUsed !== undefined || raw.amountLimit !== undefined) {
+    const amountUsed = finiteNumber(raw.amountUsed, `meters[${index}].amountUsed`);
+    const amountLimit = finiteNumber(raw.amountLimit, `meters[${index}].amountLimit`);
+    if (amountUsed < 0) throw new TypeError(`meters[${index}].amountUsed must be non-negative`);
+    if (amountLimit <= 0) throw new TypeError(`meters[${index}].amountLimit must be positive`);
+    meter.amountUsed = amountUsed;
+    meter.amountLimit = amountLimit;
+  }
   return meter;
 }
 

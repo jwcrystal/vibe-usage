@@ -178,6 +178,8 @@ function windowMeter(id, label, raw, windowSeconds) {
     label,
     utilization: clampPercent(used / cap * 100),
     windowSeconds,
+    amountUsed: used,
+    amountLimit: cap,
   };
   const resetsAt = dateFrom(raw.resetAt);
   if (resetsAt) meter.resetsAt = resetsAt.toISOString();
@@ -202,6 +204,8 @@ function monthlyMeter(credits, summary, periodEnd) {
     id: 'monthly',
     label: 'Month',
     utilization: clampPercent(spent / cap * 100),
+    amountUsed: spent,
+    amountLimit: cap,
   };
   if (periodEnd) meter.resetsAt = periodEnd.toISOString();
   return meter;
