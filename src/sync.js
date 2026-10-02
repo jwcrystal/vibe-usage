@@ -11,9 +11,59 @@ import { aggregateToBuckets } from './parsers/aggregate.js';
 import { normalizeParserResult } from './parsers/contract.js';
 import { extraRootList } from './extra-roots.js';
 import { success, failure, warn, arrow, link, dim } from './output.js';
+import { fetchQuotaProducts } from './quotas/registry.js';
+import { QUOTA_SYNC_PRODUCT_IDS } from './quotas/schema.js';
 
 const BATCH_SIZE = 100;
 const SESSION_BATCH_SIZE = 500;
+
+function normalizedApiTarget(value) {
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return null;
+    return url.href.replace(/\/+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+function isLoopbackQuotaTarget(value) {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  } catch {
+    return false;
+  }
+}
+
+/** Quotas are opt-in and only sent to a loopback server that advertises support. */
+async function syncSelectedQuotaSnapshots({
+  config, apiUrl, apiKey, serverSupportsQuotas, hostname, surface, quiet,
+}) {
+  const target = normalizedApiTarget(apiUrl);
+  const enabled = config.quotaSyncApiUrl === target && Array.isArray(config.quotaSyncProducts)
+    ? [...new Set(config.quotaSyncProducts.filter(id => QUOTA_SYNC_PRODUCT_IDS.includes(id)))]
+    : [];
+  if (!enabled.length || !serverSupportsQuotas || !isLoopbackQuotaTarget(apiUrl)) return;
+
+  try {
+    const { products = [] } = await fetchQuotaProducts(enabled);
+    const snapshots = products.filter(product => ['ok', 'no_data'].includes(product.status));
+    if (!snapshots.length) {
+      if (!quiet) console.log(dim('  订阅配额未能刷新，保留 server 上次成功数据。'));
+      return;
+    }
+    await ingest(apiUrl, apiKey, [], {
+      client: createSyncClient({ defaultSurface: surface, hostname }),
+      quotas: snapshots,
+    });
+    if (!quiet) console.log(dim(`  已同步 ${snapshots.length} 项订阅配额。`));
+  } catch {
+    // Quota refresh is independent from usage sync. Never expose provider or
+    // transport bodies, and let the server retain its last successful snapshot.
+    if (!quiet) console.error(dim('  订阅配额同步失败，保留 server 上次成功数据。'));
+  }
+}
 
 /** Coarse human duration: "45s" / "2m10s" / "1h 20m". */
 export function formatDuration(seconds) {
@@ -127,9 +177,11 @@ export async function runSync({
   // target and the actual target can never drift apart.
   const identity = stateIdentity({ apiUrl, apiKey: config.apiKey });
   let uploadProject;
+  let serverSupportsQuotas = false;
   try {
     const settings = await fetchSettings(apiUrl, config.apiKey);
     uploadProject = resolveUploadProjectSetting(settings);
+    serverSupportsQuotas = settings?.quotaSnapshots === true;
     // Scope the cached privacy choice to the server that returned it. Reusing
     // the value after `apiUrl` changes could expose project names to a
     // different server during its first settings outage.
@@ -159,6 +211,12 @@ export async function runSync({
       process.exit(1);
     }
   }
+
+  const syncHostname = config.hostname || osHostname().replace(/\.local$/, '');
+  await syncSelectedQuotaSnapshots({
+    config, apiUrl, apiKey: config.apiKey, serverSupportsQuotas,
+    hostname: syncHostname, surface, quiet,
+  });
 
   let allBuckets = [];
   const allSessions = [];

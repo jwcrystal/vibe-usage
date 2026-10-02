@@ -44,6 +44,7 @@ export function encodeIngestBody(buckets, opts, sessions) {
   const payload = { buckets };
   if (sessions && sessions.length > 0) payload.sessions = sessions;
   if (opts?.client) payload.client = opts.client;
+  if (opts?.quotas && opts.quotas.length > 0) payload.quotas = opts.quotas;
   const raw = Buffer.from(JSON.stringify(payload));
   const useGzip = raw.length >= GZIP_MIN_BYTES;
   return {
@@ -319,7 +320,7 @@ export async function fetchAccount(apiUrl, apiKey) {
  * so callers can surface invalid credentials instead of calling it an outage.
  * @param {string} apiUrl
  * @param {string} apiKey
- * @returns {Promise<{uploadProject: boolean} | null>}
+ * @returns {Promise<{uploadProject: boolean, quotaSnapshots?: boolean} | null>}
  */
 export async function fetchSettings(apiUrl, apiKey, retry = {}) {
   const wait = retry.sleep ?? sleep;

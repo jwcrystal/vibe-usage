@@ -204,6 +204,176 @@ test('a quiet sync still writes a parser skip warning to stderr', async () => {
   }
 });
 
+// Local-server quota sync: fixtures point Codex at the fake server so a gate
+// failure cannot silently reach the real provider endpoint.
+function quotaSyncFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-usage-quota-sync-'));
+  const configDir = join(root, 'config');
+  const stateDir = join(root, 'state');
+  const homeDir = join(root, 'home');
+  const codexHome = join(root, 'codex');
+  mkdirSync(configDir, { recursive: true });
+  mkdirSync(homeDir, { recursive: true });
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({
+    tokens: { access_token: 'fixture-quota-token', account_id: 'fixture-account' },
+  }));
+  return { root, configDir, stateDir, homeDir, codexHome };
+}
+
+function quotaSyncCommand() {
+  return `
+    import { parsers } from './src/parsers/index.js';
+    for (const source of Object.keys(parsers)) delete parsers[source];
+    const { runSync } = await import('./src/sync.js');
+    await runSync({ throws: true, quiet: true });
+  `;
+}
+
+test('quota sync uploads an opted-in snapshot to its bound loopback server', async () => {
+  const { root, configDir, stateDir, homeDir, codexHome } = quotaSyncFixture();
+  let codexCalls = 0;
+  const ingestBodies = [];
+  try {
+    await withServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/usage/settings') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ uploadProject: true, quotaSnapshots: true }));
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/api/codex/usage') {
+        codexCalls += 1;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          rate_limit: {
+            primary_window: {
+              used_percent: 25, limit_window_seconds: 18_000, reset_after_seconds: 3_600,
+            },
+          },
+          plan_type: 'plus',
+        }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/api/usage/ingest') {
+        const chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.on('end', () => {
+          try {
+            const raw = Buffer.concat(chunks);
+            const body = (req.headers['content-encoding'] || '') === 'gzip'
+              ? gunzipSync(raw) : raw;
+            ingestBodies.push(JSON.parse(body.toString('utf8')));
+          } catch { /* assertion fails on the empty list */ }
+          // Always answer: a handler error must not leave the CLI child
+          // retrying its ingest until timeout.
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ingested: 0, sessions: 0 }));
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    }, async apiUrl => {
+      writeFileSync(join(codexHome, 'config.toml'), `chatgpt_base_url = "${apiUrl}"\n`);
+      writeFileSync(join(configDir, 'config.json'), JSON.stringify({
+        apiKey: 'vbu_quota_sync_happy_path',
+        apiUrl,
+        hostname: 'quota-sync-host',
+        quotaSyncProducts: ['codex'],
+        quotaSyncApiUrl: apiUrl,
+      }));
+      await execFileAsync(process.execPath, ['--input-type=module', '-e', quotaSyncCommand()], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          VIBE_USAGE_DEV: '0',
+          VIBE_USAGE_CONFIG_DIR: configDir,
+          VIBE_USAGE_STATE_DIR: stateDir,
+          CODEX_HOME: codexHome,
+        },
+      });
+      assert.equal(codexCalls, 1);
+      const quotaUploads = ingestBodies.filter(body => Array.isArray(body.quotas) && body.quotas.length);
+      assert.equal(quotaUploads.length, 1);
+      const [upload] = quotaUploads;
+      assert.equal(upload.quotas[0].id, 'codex');
+      assert.equal(upload.quotas[0].status, 'ok');
+      assert.equal(upload.quotas[0].meters[0].id, 'five-hour');
+      assert.equal(upload.client.hostname, 'quota-sync-host');
+      assert.equal(JSON.stringify(upload).includes('fixture-quota-token'), false);
+      assert.equal(JSON.stringify(upload).includes('fixture-account'), false);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('quota sync never invokes providers without capability or destination binding', async () => {
+  const { root, configDir, stateDir, homeDir, codexHome } = quotaSyncFixture();
+  let advertiseCapability = true;
+  let codexCalls = 0;
+  try {
+    await withServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/usage/settings') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(advertiseCapability
+          ? { uploadProject: true, quotaSnapshots: true }
+          : { uploadProject: true }));
+        return;
+      }
+      if (req.method === 'GET' && req.url === '/api/codex/usage') {
+        codexCalls += 1;
+        res.writeHead(500).end();
+        return;
+      }
+      res.writeHead(404).end();
+    }, async apiUrl => {
+      writeFileSync(join(codexHome, 'config.toml'), `chatgpt_base_url = "${apiUrl}"\n`);
+      const writeConfig = target => {
+        writeFileSync(join(configDir, 'config.json'), JSON.stringify({
+          apiKey: 'vbu_quota_sync_gates',
+          apiUrl,
+          hostname: 'quota-sync-gates',
+          quotaSyncProducts: ['codex'],
+          quotaSyncApiUrl: target,
+        }));
+      };
+
+      advertiseCapability = false;
+      writeConfig(apiUrl);
+      await execFileAsync(process.execPath, ['--input-type=module', '-e', quotaSyncCommand()], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          VIBE_USAGE_DEV: '0',
+          VIBE_USAGE_CONFIG_DIR: configDir,
+          VIBE_USAGE_STATE_DIR: stateDir,
+          CODEX_HOME: codexHome,
+        },
+      });
+
+      advertiseCapability = true;
+      writeConfig('https://other.example');
+      await execFileAsync(process.execPath, ['--input-type=module', '-e', quotaSyncCommand()], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          HOME: homeDir,
+          VIBE_USAGE_DEV: '0',
+          VIBE_USAGE_CONFIG_DIR: configDir,
+          VIBE_USAGE_STATE_DIR: stateDir,
+          CODEX_HOME: codexHome,
+        },
+      });
+
+      assert.equal(codexCalls, 0);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('formatDuration renders seconds, minutes and hours', () => {
   assert.equal(formatDuration(0), '0s');
   assert.equal(formatDuration(59), '59s');

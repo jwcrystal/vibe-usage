@@ -301,6 +301,9 @@ const FULL_HELP = `
     ${BARE} status       Show config and detected tools
     ${BARE} quota discover --json  Detect subscription-quota products locally
     ${BARE} quota fetch --product <id> --json  Fetch only selected subscription quotas
+    ${BARE} quota sync list  Show products enabled for automatic quota sync
+    ${BARE} quota sync enable --product <id>  Enable quota sync for this API URL
+    ${BARE} quota sync disable --product <id>  Disable quota sync for a product
     ${BARE} config show  Show full config as JSON
     ${BARE} config get <key>   Get a config value
     ${BARE} config set <key> <value>  Set a config value

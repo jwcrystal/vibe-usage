@@ -1,20 +1,28 @@
 export const QUOTA_SCHEMA_VERSION = 1;
 
 export const QUOTA_PRODUCT_IDS = Object.freeze([
+  'codex',
   'kimi-code',
   'zcode',
   'grok',
   'opencode-go',
   'commandcode',
+  'claude-code',
   'cursor',
 ]);
 
 export const FETCHABLE_QUOTA_PRODUCT_IDS = Object.freeze([
+  'codex',
   'kimi-code',
   'zcode',
   'grok',
   'opencode-go',
   'commandcode',
+  'claude-code',
+]);
+
+export const QUOTA_SYNC_PRODUCT_IDS = Object.freeze([
+  'codex', 'commandcode', 'claude-code', 'opencode-go',
 ]);
 
 /**
@@ -140,6 +148,7 @@ export function quotaResult({
   status,
   meters = [],
   planLabel,
+  resetCredits,
   fetchedAt = new Date(),
   dataAsOf = fetchedAt,
   message,
@@ -161,6 +170,12 @@ export function quotaResult({
   };
   const normalizedDataAsOf = optionalISODate(dataAsOf, 'dataAsOf');
   if (normalizedDataAsOf) result.dataAsOf = normalizedDataAsOf;
+  if (resetCredits !== undefined && resetCredits !== null) {
+    if (!Number.isInteger(resetCredits) || resetCredits < 0 || resetCredits > 1_000_000) {
+      throw new TypeError('resetCredits must be a non-negative integer');
+    }
+    result.resetCredits = resetCredits;
+  }
   if (typeof planLabel === 'string' && planLabel.trim()) result.planLabel = planLabel.trim();
   if (typeof message === 'string' && message.trim()) result.message = message.trim();
   if (emptyReason !== undefined && emptyReason !== null) {

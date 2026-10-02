@@ -52,7 +52,7 @@ test('quota discover prints a versioned JSON-only contract', () => {
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.schemaVersion, 1);
   assert.deepEqual(payload.products.map(product => product.id), [
-    'kimi-code', 'zcode', 'grok', 'opencode-go', 'commandcode', 'cursor',
+    'codex', 'kimi-code', 'zcode', 'grok', 'opencode-go', 'commandcode', 'claude-code', 'cursor',
   ]);
 });
 
@@ -61,6 +61,38 @@ test('quota fetch rejects unsupported products as a contract error', () => {
   assert.equal(result.status, 1);
   assert.equal(result.stdout, '');
   assert.match(result.stderr, /Unsupported quota product: cursor/);
+});
+
+test('quota sync requires explicit opt-in and binds the selection to apiUrl origin', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-usage-quota-sync-'));
+  const configPath = join(root, 'config.json');
+  try {
+    writeFileSync(configPath, JSON.stringify({
+      apiKey: 'vbu_test_quota_sync_key',
+      apiUrl: 'http://127.0.0.1:3456/custom/path',
+    }));
+    const env = { VIBE_USAGE_CONFIG_DIR: root };
+    const initial = runWithEnv(['quota', 'sync', 'list'], env);
+    assert.equal(initial.status, 0, initial.stderr);
+    assert.deepEqual(JSON.parse(initial.stdout), { products: [], boundToCurrentServer: false });
+
+    const enabled = runWithEnv(['quota', 'sync', 'enable', '--product', 'codex', '--product', 'claude-code'], env);
+    assert.equal(enabled.status, 0, enabled.stderr);
+    assert.deepEqual(JSON.parse(enabled.stdout), {
+      products: ['codex', 'claude-code'], boundToCurrentServer: true,
+    });
+    assert.equal((JSON.parse(readFileSync(configPath, 'utf8'))).quotaSyncApiUrl,
+      'http://127.0.0.1:3456/custom/path');
+
+    const changed = JSON.parse(readFileSync(configPath, 'utf8'));
+    changed.apiUrl = 'http://localhost:3456';
+    writeFileSync(configPath, JSON.stringify(changed));
+    const targetChanged = runWithEnv(['quota', 'sync', 'list'], env);
+    assert.equal(targetChanged.status, 0, targetChanged.stderr);
+    assert.deepEqual(JSON.parse(targetChanged.stdout), { products: [], boundToCurrentServer: false });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('unknown daemon subcommand fails instead of starting the foreground loop', () => {

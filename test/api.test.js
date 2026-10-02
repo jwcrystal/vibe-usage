@@ -37,6 +37,19 @@ test('ingest encodes client metadata in the gzipped JSON body', () => {
   assert.deepEqual(received.buckets, [{ source: 'codex' }]);
 });
 
+test('ingest includes optional quota snapshots without affecting legacy payloads', () => {
+  const quota = {
+    id: 'codex', status: 'ok', meters: [{ id: 'five-hour', label: '5h', utilization: 41 }],
+    fetchedAt: '2026-10-01T00:00:00.000Z', dataAsOf: '2026-10-01T00:00:00.000Z',
+  };
+  const decode = encoded => (encoded.useGzip ? gunzipSync(encoded.body) : encoded.body).toString('utf8');
+  const encoded = encodeIngestBody([], { quotas: [quota] });
+  assert.deepEqual(JSON.parse(decode(encoded)), { buckets: [], quotas: [quota] });
+
+  const legacy = encodeIngestBody([], {});
+  assert.deepEqual(JSON.parse(decode(legacy)), { buckets: [] });
+});
+
 test('retry delay uses equal jitter instead of synchronized fixed boundaries', () => {
   assert.equal(retryDelayMs(0, () => 0), 500);
   assert.equal(retryDelayMs(0, () => 1), 1000);
