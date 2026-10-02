@@ -2,6 +2,7 @@ import { accessSync, constants, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { loadCachedQuota, saveCachedQuota } from './cache.js';
+import { fetchCommandcodeQuota } from './providers/commandcode.js';
 import { fetchGrokQuota } from './providers/grok.js';
 import { fetchKimiCodeQuota } from './providers/kimi-code.js';
 import { fetchOpenCodeGoQuota } from './providers/opencode-go.js';
@@ -13,6 +14,7 @@ const providers = new Map([
   ['zcode', fetchZaiQuota],
   ['grok', fetchGrokQuota],
   ['opencode-go', fetchOpenCodeGoQuota],
+  ['commandcode', fetchCommandcodeQuota],
 ]);
 
 function executableExists(name, environment, platform) {
@@ -79,6 +81,14 @@ export function discoverQuotaProducts({
       id: 'opencode-go',
       detected: existsAny([join(home, '.local', 'share', 'opencode')])
         || executableExists('opencode', environment, platform),
+      fetchable: true,
+    },
+    {
+      // File-existence only: discovery checks for CommandCode's own auth file
+      // and never opens or reads it (a bare `~/.commandcode` directory is not
+      // a presence signal); the fetch path checks the key.
+      id: 'commandcode',
+      detected: existsSync(join(home, '.commandcode', 'auth.json')),
       fetchable: true,
     },
     {

@@ -103,6 +103,7 @@ test('quota discovery detects Grok and Cursor independently', () => {
       { id: 'zcode', detected: true, fetchable: true },
       { id: 'grok', detected: true, fetchable: true },
       { id: 'opencode-go', detected: true, fetchable: true },
+      { id: 'commandcode', detected: false, fetchable: true },
       { id: 'cursor', detected: true, fetchable: false },
     ]);
   } finally {
@@ -135,6 +136,7 @@ test('quota discovery follows Windows PATH and PATHEXT command rules', () => {
       { id: 'zcode', detected: true, fetchable: true },
       { id: 'grok', detected: true, fetchable: true },
       { id: 'opencode-go', detected: false, fetchable: true },
+      { id: 'commandcode', detected: false, fetchable: true },
       { id: 'cursor', detected: true, fetchable: false },
     ]);
   } finally {

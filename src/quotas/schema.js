@@ -5,6 +5,7 @@ export const QUOTA_PRODUCT_IDS = Object.freeze([
   'zcode',
   'grok',
   'opencode-go',
+  'commandcode',
   'cursor',
 ]);
 
@@ -13,6 +14,7 @@ export const FETCHABLE_QUOTA_PRODUCT_IDS = Object.freeze([
   'zcode',
   'grok',
   'opencode-go',
+  'commandcode',
 ]);
 
 /**
