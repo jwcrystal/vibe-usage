@@ -160,6 +160,7 @@ export function quotaResult({
   meters = [],
   planLabel,
   resetCredits,
+  resetCreditsAt,
   fetchedAt = new Date(),
   dataAsOf = fetchedAt,
   message,
@@ -186,6 +187,16 @@ export function quotaResult({
       throw new TypeError('resetCredits must be a non-negative integer');
     }
     result.resetCredits = resetCredits;
+  }
+  if (resetCreditsAt !== undefined && resetCreditsAt !== null) {
+    if (!Array.isArray(resetCreditsAt) || resetCreditsAt.length > 8
+      || resetCreditsAt.some((item) => typeof item !== 'string')) {
+      throw new TypeError('resetCreditsAt must be ISO date strings');
+    }
+    const dates = resetCreditsAt
+      .map((item) => optionalISODate(item, 'resetCreditsAt'))
+      .filter((item) => item !== undefined);
+    if (dates.length) result.resetCreditsAt = dates;
   }
   if (typeof planLabel === 'string' && planLabel.trim()) result.planLabel = planLabel.trim();
   if (typeof message === 'string' && message.trim()) result.message = message.trim();

@@ -161,6 +161,41 @@ async function send(url, auth, fetchImpl, now) {
   return { error: last || 'Codex quota request failed' };
 }
 
+/**
+ * Best-effort enrichment: the reset-credit expiry dates live on a dedicated
+ * endpoint the usage payload only counts (`available_count`). A failure here
+ * never downgrades the main read — the count alone still ships.
+ */
+async function fetchResetCreditDates(base, auth, fetchImpl) {
+  try {
+    const response = await fetchImpl(`${base}/wham/rate-limit-reset-credits`, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+      headers: {
+        authorization: `Bearer ${auth.token}`,
+        accept: 'application/json',
+        ...(auth.accountId ? { 'ChatGPT-Account-Id': auth.accountId } : {}),
+      },
+    });
+    if (response.status !== 200) return undefined;
+    const payload = await response.json();
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)
+      || !Array.isArray(payload.credits)) return undefined;
+    const dates = payload.credits
+      .filter((credit) => credit && typeof credit === 'object' && !Array.isArray(credit)
+        && credit.status === 'available'
+        && typeof credit.expires_at === 'string'
+        && !Number.isNaN(Date.parse(credit.expires_at)))
+      .map((credit) => new Date(credit.expires_at).toISOString())
+      .sort()
+      .slice(0, 8);
+    return dates.length ? dates : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function fetchCodexQuota({ environment = process.env, now = new Date(), fetchImpl = fetch } = {}) {
   let auth = readAuth(environment);
   if (!auth) {
@@ -198,6 +233,15 @@ export async function fetchCodexQuota({ environment = process.env, now = new Dat
   if (response.status !== undefined) return retryable(now);
   if (response.error) return retryable(now, response.error);
   if (!response.result) return retryable(now, 'Codex quota response was not recognized');
+  // Dates are enrichment only: requested when a count exists, skipped on any
+  // failure so the main read's shape is never at risk.
+  if (response.result.resetCredits > 0) {
+    try {
+      const resetBase = url.origin
+        + url.pathname.replace(/\/(wham\/usage|api\/codex\/usage)$/, '');
+      response.result.resetCreditsAt = await fetchResetCreditDates(resetBase, auth, fetchImpl);
+    } catch { /* enrichment is optional */ }
+  }
   Object.defineProperty(response.result, 'cacheScope', { value: scope, enumerable: false });
   return response.result;
 }

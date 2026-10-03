@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fetchCodexQuota, parseCodexUsage } from '../src/quotas/providers/codex.js';
+import { quotaResult } from '../src/quotas/schema.js';
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), 'vibe-codex-quota-'));
@@ -67,7 +68,7 @@ test('Codex quota reads auth only for request, retries changed auth once, and ne
   const f = fixture();
   try {
     let calls = 0;
-    const result = await fetchCodexQuota({ environment: f.environment, fetchImpl: async (_url, options) => {
+    const result = await fetchCodexQuota({ environment: f.environment, fetchImpl: async (url, options) => {
       calls += 1;
       if (calls === 1) {
         assert.equal(options.headers.authorization, 'Bearer fixture-token-one');
@@ -76,14 +77,54 @@ test('Codex quota reads auth only for request, retries changed auth once, and ne
       }
       assert.equal(options.headers.authorization, 'Bearer fixture-token-two');
       assert.equal(options.headers['ChatGPT-Account-Id'], 'account-two');
+      if (String(url).endsWith('/wham/rate-limit-reset-credits')) {
+        return new Response(JSON.stringify({ credits: [
+          { status: 'available', expires_at: '2026-10-22T18:59:11Z', id: 'credit-id-must-not-appear' },
+          { status: 'available', expires_at: '2026-10-04T01:25:57Z' },
+          { status: 'redeemed', expires_at: '2026-11-01T00:00:00Z' },
+          { status: 'available', expires_at: 'not-a-date' },
+        ], available_count: 2 }), { status: 200 });
+      }
       return new Response(JSON.stringify(response()), { status: 200 });
     } });
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
     assert.equal(result.status, 'ok');
+    assert.deepEqual(result.resetCreditsAt, ['2026-10-04T01:25:57.000Z', '2026-10-22T18:59:11.000Z']);
     assert.equal(JSON.stringify(result).includes('fixture-token'), false);
     assert.equal(JSON.stringify(result).includes('account-two'), false);
     assert.equal(JSON.stringify(result).includes('cacheScope'), false);
+    assert.equal(JSON.stringify(result).includes('credit-id-must-not-appear'), false);
     assert.match(readFileSync(f.authPath, 'utf8'), /fixture-token-two/);
+  } finally {
+    rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('resetCreditsAt is a bounded list of valid ISO dates', () => {
+  const base = { id: 'codex', status: 'ok' };
+  assert.throws(() => quotaResult({ ...base, resetCreditsAt: 'nope' }));
+  assert.throws(() => quotaResult({ ...base, resetCreditsAt: ['bad'] }));
+  assert.throws(() => quotaResult({
+    ...base,
+    resetCreditsAt: Array.from({ length: 9 }, () => '2026-10-04T00:00:00Z'),
+  }));
+  const ok = quotaResult({ ...base, resetCreditsAt: ['2026-10-04T01:25:57Z'] });
+  assert.deepEqual(ok.resetCreditsAt, ['2026-10-04T01:25:57.000Z']);
+  assert.equal(quotaResult({ ...base, resetCreditsAt: [] }).resetCreditsAt, undefined);
+});
+
+test('reset-credit enrichment failure never downgrades the main read', async () => {
+  const f = fixture();
+  try {
+    const result = await fetchCodexQuota({ environment: f.environment, fetchImpl: async (url) => {
+      if (String(url).endsWith('/wham/rate-limit-reset-credits')) {
+        return new Response('', { status: 500 });
+      }
+      return new Response(JSON.stringify(response()), { status: 200 });
+    } });
+    assert.equal(result.status, 'ok');
+    assert.equal(result.resetCredits, 4);
+    assert.equal(result.resetCreditsAt, undefined);
   } finally {
     rmSync(f.root, { recursive: true, force: true });
   }
