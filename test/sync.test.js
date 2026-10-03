@@ -149,6 +149,85 @@ test('a sync announces how much it is about to upload', async () => {
   }
 });
 
+test('actual-call timestamps ride only on servers that advertise them', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-usage-call-times-'));
+  const configDir = join(root, 'config');
+  const stateDir = join(root, 'state');
+  const homeDir = join(root, 'home');
+  mkdirSync(configDir, { recursive: true });
+  mkdirSync(homeDir, { recursive: true });
+  let advertise = false;
+  const ingestedBuckets = [];
+  const run = tokens => execFileAsync(process.execPath, ['--input-type=module', '-e', `
+    import { parsers } from './src/parsers/index.js';
+    for (const source of Object.keys(parsers)) delete parsers[source];
+    parsers['call-times-test'] = async () => ({
+      buckets: [{
+        source: 'call-times-test', model: 'm', project: 'p',
+        bucketStart: '2026-10-03T01:30:00.000Z',
+        firstCallAt: '2026-10-03T01:32:00.000Z',
+        lastCallAt: '2026-10-03T01:47:00.000Z',
+        inputTokens: ${tokens}, outputTokens: 0, cachedInputTokens: 0, reasoningOutputTokens: 0,
+        totalTokens: ${tokens},
+      }],
+      sessions: [],
+    });
+    const { runSync } = await import('./src/sync.js');
+    await runSync({ throws: true, quiet: true });
+  `], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      VIBE_USAGE_DEV: '0',
+      VIBE_USAGE_CONFIG_DIR: configDir,
+      VIBE_USAGE_STATE_DIR: stateDir,
+    },
+  });
+  try {
+    await withServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/usage/settings') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ uploadProject: true, ...(advertise ? { bucketCallTimestamps: true } : {}) }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/api/usage/ingest') {
+        const chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.on('end', () => {
+          try {
+            const raw = Buffer.concat(chunks);
+            const body = (req.headers['content-encoding'] || '') === 'gzip' ? gunzipSync(raw) : raw;
+            ingestedBuckets.push(...JSON.parse(body.toString('utf8')).buckets);
+          } catch { /* assertion fails on the empty list */ }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ingested: 1, sessions: 0 }));
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    }, async apiUrl => {
+      writeFileSync(join(configDir, 'config.json'), JSON.stringify({
+        apiKey: 'vbu_call_times_gate', apiUrl, hostname: 'call-times-host',
+      }));
+      // Hosted-style server (no capability): the fields must never leave.
+      await run(5);
+      assert.equal(ingestedBuckets.length, 1);
+      assert.equal('firstCallAt' in ingestedBuckets[0], false);
+      assert.equal('lastCallAt' in ingestedBuckets[0], false);
+
+      // Local server advertising the capability: the fields ride along.
+      advertise = true;
+      await run(9);
+      const sent = ingestedBuckets[ingestedBuckets.length - 1];
+      assert.equal(sent.firstCallAt, '2026-10-03T01:32:00.000Z');
+      assert.equal(sent.lastCallAt, '2026-10-03T01:47:00.000Z');
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a quiet sync still writes a parser skip warning to stderr', async () => {
   const root = mkdtempSync(join(tmpdir(), 'vibe-usage-quiet-warning-'));
   const configDir = join(root, 'config');

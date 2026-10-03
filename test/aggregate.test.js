@@ -16,6 +16,20 @@ function entry(overrides = {}) {
   };
 }
 
+test('aggregateToBuckets carries the real first/last call times from the log entries', () => {
+  const buckets = aggregateToBuckets([
+    entry({ timestamp: new Date('2026-10-03T01:47:00Z'), inputTokens: 1 }),
+    entry({ timestamp: new Date('2026-10-03T01:32:00Z'), inputTokens: 1 }),
+  ]);
+  assert.equal(buckets.length, 1);
+  assert.equal(buckets[0].bucketStart, '2026-10-03T01:30:00.000Z');
+  assert.equal(buckets[0].firstCallAt, '2026-10-03T01:32:00.000Z');
+  assert.equal(buckets[0].lastCallAt, '2026-10-03T01:47:00.000Z');
+  // No private accumulator fields leak into the emitted bucket.
+  assert.equal('_firstCallMs' in buckets[0], false);
+  assert.equal('_lastCallMs' in buckets[0], false);
+});
+
 test('aggregateToBuckets clamps summed token fields to non-negative integers', () => {
   const buckets = aggregateToBuckets([
     entry({ inputTokens: 1.5, outputTokens: 0.02, cachedInputTokens: NaN, reasoningOutputTokens: -3 }),

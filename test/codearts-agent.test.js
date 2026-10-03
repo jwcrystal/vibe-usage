@@ -133,6 +133,8 @@ test('CodeArts Agent counts child calls but folds child timing into one human se
       model: 'GLM-5.2',
       project: 'root-project',
       bucketStart: '2026-09-17T01:00:00.000Z',
+      firstCallAt: '2026-09-17T01:00:01.000Z',
+      lastCallAt: '2026-09-17T01:00:03.000Z',
       inputTokens: 15,
       outputTokens: 7,
       cachedInputTokens: 7,

@@ -77,6 +77,8 @@ test('legacy parser: seconds timestamps, cache fields, no now-fallback, both sto
     model: 'kimi-code/kimi-for-coding',
     project: 'legacy-project',
     bucketStart: '2026-04-29T10:00:00.000Z',
+    firstCallAt: '2026-04-29T10:06:00.000Z',
+    lastCallAt: '2026-04-29T10:07:00.000Z',
     inputTokens: 13, // 10 input_other + 3 cache creation
     outputTokens: 2,
     cachedInputTokens: 10, // 4 + 6 (dedup by message_id), cache-only record counted

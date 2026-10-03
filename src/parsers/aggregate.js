@@ -48,6 +48,12 @@ export function aggregateToBuckets(entries) {
         // every machine gets its own duplicate row server-side.
         ...(e.hostname ? { hostname: e.hostname } : {}),
         bucketStart,
+        // Actual model-call window from the raw log entry timestamps. The
+        // bucket key is half-hour-rounded (stable dedup + trend charts); the
+        // 詳細記錄 table shows the real call time from these fields, with
+        // bucketStart as the fallback for rows aggregated before they existed.
+        _firstCallMs: e.timestamp instanceof Date ? e.timestamp.getTime() : Number(e.timestamp),
+        _lastCallMs: e.timestamp instanceof Date ? e.timestamp.getTime() : Number(e.timestamp),
         inputTokens: 0,
         outputTokens: 0,
         cachedInputTokens: 0,
@@ -62,6 +68,11 @@ export function aggregateToBuckets(entries) {
     }
 
     const b = map.get(key);
+    const callMs = e.timestamp instanceof Date ? e.timestamp.getTime() : Number(e.timestamp);
+    if (Number.isFinite(callMs)) {
+      if (callMs < b._firstCallMs) b._firstCallMs = callMs;
+      if (callMs > b._lastCallMs) b._lastCallMs = callMs;
+    }
     b.inputTokens += e.inputTokens || 0;
     b.outputTokens += e.outputTokens || 0;
     b.cachedInputTokens += e.cachedInputTokens || 0;
@@ -73,6 +84,7 @@ export function aggregateToBuckets(entries) {
   // Clamp after summation, not per entry — rounding each entry first would
   // discard sub-integer values instead of letting them accumulate.
   return Array.from(map.values()).map((b) => {
+    const { _firstCallMs, _lastCallMs, ...rest } = b;
     const inputTokens = toTokenCount(b.inputTokens);
     const outputTokens = toTokenCount(b.outputTokens);
     const cachedInputTokens = toTokenCount(b.cachedInputTokens);
@@ -80,7 +92,9 @@ export function aggregateToBuckets(entries) {
     const cacheCreation5mTokens = toTokenCount(b.cacheCreation5mTokens);
     const cacheCreation1hTokens = toTokenCount(b.cacheCreation1hTokens);
     return {
-      ...b,
+      ...rest,
+      ...(Number.isFinite(_firstCallMs) ? { firstCallAt: new Date(_firstCallMs).toISOString() } : {}),
+      ...(Number.isFinite(_lastCallMs) ? { lastCallAt: new Date(_lastCallMs).toISOString() } : {}),
       inputTokens,
       outputTokens,
       cachedInputTokens,

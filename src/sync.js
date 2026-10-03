@@ -192,10 +192,16 @@ export async function runSync({
   const identity = stateIdentity({ apiUrl, apiKey: config.apiKey });
   let uploadProject;
   let serverSupportsQuotas = false;
+  let bucketCallTimestamps = false;
   try {
     const settings = await fetchSettings(apiUrl, config.apiKey);
     uploadProject = resolveUploadProjectSetting(settings);
     serverSupportsQuotas = settings?.quotaSnapshots === true;
+    // Actual-call timestamps on buckets are a local-server capability: the
+    // hosted service has never seen these fields, and shipping unknown fields
+    // to a strict validator would drop whole batches. Aggregate always emits
+    // them; the gate only controls the wire.
+    bucketCallTimestamps = settings?.bucketCallTimestamps === true;
     // Scope the cached privacy choice to the server that returned it. Reusing
     // the value after `apiUrl` changes could expose project names to a
     // different server during its first settings outage.
@@ -413,7 +419,11 @@ export async function runSync({
     return 0;
   }
 
-  const allBucketsToSend = changedBuckets;
+  let allBucketsToSend = changedBuckets;
+  if (!bucketCallTimestamps) {
+    // Strip the local-only fields for servers that never advertised them.
+    allBucketsToSend = changedBuckets.map(({ firstCallAt, lastCallAt, ...bucket }) => bucket);
+  }
   const allSessionsToSend = changedSessions;
 
   let totalIngested = 0;

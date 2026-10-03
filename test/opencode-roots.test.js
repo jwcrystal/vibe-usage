@@ -205,6 +205,8 @@ test('OpenCode reads the 2.x session_message projection without a legacy message
     model: 'claude-opus-4-6',
     project: 'v2-project',
     bucketStart: '2026-09-12T00:00:00.000Z',
+    firstCallAt: '2026-09-12T00:00:01.000Z',
+    lastCallAt: '2026-09-12T00:00:01.000Z',
     inputTokens: 10,
     outputTokens: 3,
     cachedInputTokens: 2,

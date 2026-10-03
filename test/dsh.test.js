@@ -173,6 +173,8 @@ test('DSH buckets map uncached input, cache reads, and split reasoning from outp
         model: 'deepseek-v4-pro',
         project: 'proj-a',
         bucketStart: '2023-11-14T22:00:00.000Z',
+        firstCallAt: '2023-11-14T22:15:20.000Z',
+        lastCallAt: '2023-11-14T22:15:30.000Z',
         inputTokens: 170,
         outputTokens: 30,
         cachedInputTokens: 400,

@@ -180,6 +180,7 @@ test('Cursor retains CSV accounting and cookie fallback after an auth rejection'
   assert.deepEqual(result.buckets, [{
     source: 'cursor', model: 'test-model', project: 'unknown', hostname: 'cursor-cloud',
     bucketStart: '2026-09-07T01:00:00.000Z',
+    firstCallAt: '2026-09-07T01:02:00.000Z', lastCallAt: '2026-09-07T01:02:00.000Z',
     inputTokens: 30, outputTokens: 40, cachedInputTokens: 30,
     reasoningOutputTokens: 0, cacheCreation5mTokens: 0, cacheCreation1hTokens: 0,
     totalTokens: 70,

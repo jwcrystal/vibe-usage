@@ -86,6 +86,8 @@ test('current Kimi parser counts all delta scopes, cache creation, and subagents
     model: 'kimi-code/k3',
     project: 'actual-project',
     bucketStart: '2026-07-17T00:00:00.000Z',
+    firstCallAt: '2026-07-17T00:02:00.000Z',
+    lastCallAt: '2026-07-17T00:04:00.000Z',
     inputTokens: 28,
     outputTokens: 4,
     cachedInputTokens: 13,

@@ -99,6 +99,8 @@ test('parse reads exact token usage and session timing from MiMoCode SQLite', as
       model: 'mimo-v2.5-pro',
       project: 'mimo-app',
       bucketStart: '2026-07-27T08:00:00.000Z',
+      firstCallAt: '2026-07-27T08:10:00.000Z',
+      lastCallAt: '2026-07-27T08:10:00.000Z',
       inputTokens: 140,
       outputTokens: 30,
       cachedInputTokens: 400,

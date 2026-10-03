@@ -88,6 +88,8 @@ test('Claude parser counts cache creation, keeps the initial cwd project, and dr
       model: 'claude-opus-4-8',
       project: 'my-hyphen-project',
       bucketStart: '2026-07-21T10:00:00.000Z',
+      firstCallAt: '2026-07-21T10:05:00.000Z',
+      lastCallAt: '2026-07-21T10:05:00.000Z',
       // Cache writes are no longer folded into input: Anthropic prices the two
       // TTLs at 1.25x / 2x the base input rate, so they travel as their own
       // columns and the server can bill them.

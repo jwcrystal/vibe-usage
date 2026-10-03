@@ -32,6 +32,7 @@ test('hidden projects merge before upload identities collide', () => {
   assert.deepEqual(hostA, {
     source: 'codex', model: 'gpt-test', project: 'unknown', hostname: 'host-a',
     bucketStart: '2026-08-12T00:00:00.000Z',
+    firstCallAt: '2026-08-12T00:00:00.000Z', lastCallAt: '2026-08-12T00:00:00.000Z',
     inputTokens: 300, outputTokens: 30, cachedInputTokens: 3_000,
     reasoningOutputTokens: 15, cacheCreation5mTokens: 0, cacheCreation1hTokens: 0,
     totalTokens: 345,
@@ -39,6 +40,7 @@ test('hidden projects merge before upload identities collide', () => {
   assert.deepEqual(hostB, {
     source: 'codex', model: 'gpt-test', project: 'unknown', hostname: 'host-b',
     bucketStart: '2026-08-12T00:00:00.000Z',
+    firstCallAt: '2026-08-12T00:00:00.000Z', lastCallAt: '2026-08-12T00:00:00.000Z',
     inputTokens: 300, outputTokens: 30, cachedInputTokens: 3_000,
     reasoningOutputTokens: 15, cacheCreation5mTokens: 0, cacheCreation1hTokens: 0,
     totalTokens: 345,
