@@ -308,6 +308,118 @@ test('quota sync uploads an opted-in snapshot to its bound loopback server', asy
   }
 });
 
+test('quota sync uploads definitive no-data states instead of leaving cards loading forever', async () => {
+  const { root, configDir, stateDir, homeDir, codexHome } = quotaSyncFixture();
+  const ingestBodies = [];
+  const run = apiUrl => execFileAsync(process.execPath, ['--input-type=module', '-e', quotaSyncCommand()], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      HOME: homeDir,
+      VIBE_USAGE_DEV: '0',
+      VIBE_USAGE_CONFIG_DIR: configDir,
+      VIBE_USAGE_STATE_DIR: stateDir,
+      CODEX_HOME: codexHome,
+    },
+  });
+  try {
+    // No auth.json in CODEX_HOME: missing_credentials is a definitive answer.
+    rmSync(join(codexHome, 'auth.json'));
+    await withServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/usage/settings') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ uploadProject: true, quotaSnapshots: true }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/api/usage/ingest') {
+        const chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.on('end', () => {
+          try {
+            const raw = Buffer.concat(chunks);
+            const body = (req.headers['content-encoding'] || '') === 'gzip'
+              ? gunzipSync(raw) : raw;
+            ingestBodies.push(JSON.parse(body.toString('utf8')));
+          } catch { /* assertion fails on the empty list */ }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ingested: 0, sessions: 0 }));
+        });
+        return;
+      }
+      // Any provider request would mean the fetch ran despite missing credentials.
+      res.writeHead(404).end();
+    }, async apiUrl => {
+      writeFileSync(join(configDir, 'config.json'), JSON.stringify({
+        apiKey: 'vbu_quota_sync_definitive',
+        apiUrl,
+        hostname: 'quota-sync-host',
+        quotaSyncProducts: ['codex'],
+        quotaSyncApiUrl: apiUrl,
+      }));
+      await run(apiUrl);
+    });
+    let uploads = ingestBodies.filter(body => Array.isArray(body.quotas) && body.quotas.length);
+    assert.equal(uploads.length, 1);
+    const [missing] = uploads[0].quotas;
+    assert.equal(missing.id, 'codex');
+    assert.equal(missing.status, 'no_data');
+    assert.equal(missing.emptyReason, 'notDetected');
+    assert.deepEqual(missing.meters, []);
+
+    // A rejected token (401 after the one re-read) is also definitive.
+    ingestBodies.length = 0;
+    rmSync(join(codexHome, 'auth.json'), { force: true });
+    writeFileSync(join(codexHome, 'auth.json'), JSON.stringify({
+      tokens: { access_token: 'fixture-quota-token', account_id: 'fixture-account' },
+    }));
+    await withServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/usage/settings') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ uploadProject: true, quotaSnapshots: true }));
+        return;
+      }
+      if (req.method === 'GET' && req.url.startsWith('/api/codex/usage')) {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid_token' }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/api/usage/ingest') {
+        const chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.on('end', () => {
+          try {
+            const raw = Buffer.concat(chunks);
+            const body = (req.headers['content-encoding'] || '') === 'gzip'
+              ? gunzipSync(raw) : raw;
+            ingestBodies.push(JSON.parse(body.toString('utf8')));
+          } catch { /* assertion fails on the empty list */ }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ingested: 0, sessions: 0 }));
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    }, async apiUrl => {
+      writeFileSync(join(codexHome, 'config.toml'), `chatgpt_base_url = "${apiUrl}"\n`);
+      writeFileSync(join(configDir, 'config.json'), JSON.stringify({
+        apiKey: 'vbu_quota_sync_definitive',
+        apiUrl,
+        hostname: 'quota-sync-host',
+        quotaSyncProducts: ['codex'],
+        quotaSyncApiUrl: apiUrl,
+      }));
+      await run(apiUrl);
+    });
+    uploads = ingestBodies.filter(body => Array.isArray(body.quotas) && body.quotas.length);
+    assert.equal(uploads.length, 1);
+    const [rejected] = uploads[0].quotas;
+    assert.equal(rejected.status, 'no_data');
+    assert.equal(rejected.emptyReason, 'unauthorized');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('quota sync never invokes providers without capability or destination binding', async () => {
   const { root, configDir, stateDir, homeDir, codexHome } = quotaSyncFixture();
   let advertiseCapability = true;

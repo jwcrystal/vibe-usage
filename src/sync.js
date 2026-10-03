@@ -12,7 +12,7 @@ import { normalizeParserResult } from './parsers/contract.js';
 import { extraRootList } from './extra-roots.js';
 import { success, failure, warn, arrow, link, dim } from './output.js';
 import { fetchQuotaProducts } from './quotas/registry.js';
-import { QUOTA_SYNC_PRODUCT_IDS } from './quotas/schema.js';
+import { QUOTA_SYNC_PRODUCT_IDS, quotaResult } from './quotas/schema.js';
 
 const BATCH_SIZE = 100;
 const SESSION_BATCH_SIZE = 500;
@@ -26,6 +26,15 @@ function normalizedApiTarget(value) {
     return null;
   }
 }
+
+// Provider answers that are definitive rather than transient: uploading them
+// as no_data snapshots lets the dashboard render an actionable card state.
+// Transient failures (retryable_error) keep the preserve-last-good semantics.
+const DEFINITIVE_EMPTY_REASONS = new Map([
+  ['missing_credentials', 'notDetected'],
+  ['expired_credentials', 'unauthorized'],
+  ['unauthorized', 'unauthorized'],
+]);
 
 function isLoopbackQuotaTarget(value) {
   try {
@@ -48,7 +57,12 @@ async function syncSelectedQuotaSnapshots({
 
   try {
     const { products = [] } = await fetchQuotaProducts(enabled);
-    const snapshots = products.filter(product => ['ok', 'no_data'].includes(product.status));
+    const snapshots = products.flatMap(product => {
+      if (['ok', 'no_data'].includes(product.status)) return [product];
+      const emptyReason = DEFINITIVE_EMPTY_REASONS.get(product.status);
+      if (!emptyReason) return [];
+      return [quotaResult({ id: product.id, status: 'no_data', emptyReason })];
+    });
     if (!snapshots.length) {
       if (!quiet) console.log(dim('  订阅配额未能刷新，保留 server 上次成功数据。'));
       return;

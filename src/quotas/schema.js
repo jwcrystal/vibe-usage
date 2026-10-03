@@ -36,6 +36,11 @@ export const QUOTA_EMPTY_REASONS = Object.freeze([
   'noWindow',
   'notEntitled',
   'sessionWithoutPlanLimits',
+  // Definitive "nothing to show yet" answers uploaded by quota sync so the
+  // dashboard can render an actionable card state instead of an endless
+  // loading skeleton: the tool/login is missing, or the login was rejected.
+  'notDetected',
+  'unauthorized',
 ]);
 
 const FETCH_STATUSES = new Set([
