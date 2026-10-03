@@ -35,6 +35,28 @@ process.stdin.on('data', chunk => {
   }
 });`;
 
+test('extra usage meter carries its dollar pair only when enabled with a cap', () => {
+  const result = parseClaudeUsage({
+    subscription_type: 'max',
+    rate_limits: {
+      five_hour: { utilization: 10 },
+      extra_usage: { is_enabled: true, used_credits: 12.5, monthly_limit: 35 },
+    },
+  });
+  const extra = result.meters.find((meter) => meter.id === 'extra-usage');
+  assert.equal(extra.amountUsed, 12.5);
+  assert.equal(extra.amountLimit, 35);
+
+  // Disabled extras stay off the card entirely.
+  const off = parseClaudeUsage({
+    rate_limits: {
+      five_hour: { utilization: 10 },
+      extra_usage: { is_enabled: false, used_credits: 1, monthly_limit: 2 },
+    },
+  });
+  assert.equal(off.meters.some((meter) => meter.id === 'extra-usage'), false);
+});
+
 test('Claude quota parser emits only allowlisted plan meters', () => {
   const result = parseClaudeUsage({
     subscription_type: 'max',

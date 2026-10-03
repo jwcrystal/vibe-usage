@@ -70,7 +70,8 @@ export function parseClaudeUsage(payload, now = new Date()) {
     const limit = number(extra.monthly_limit);
     if (extra.is_enabled && used !== null && limit !== null && limit > 0) {
       meters.push({ id: 'extra-usage', label: 'Extra',
-        utilization: Math.max(0, Math.min(100, used / limit * 100)) });
+        utilization: Math.max(0, Math.min(100, used / limit * 100)),
+        amountUsed: used, amountLimit: limit });
     }
   }
   if (!meters.some(meter => meter.id === 'five-hour' || meter.id === 'weekly')) return null;

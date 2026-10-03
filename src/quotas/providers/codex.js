@@ -98,6 +98,32 @@ export function parseCodexUsage(payload, now = new Date()) {
       ...(window.resetsAt ? { resetsAt: window.resetsAt } : {}),
     });
   }
+  // Monthly spend cap (CodexBar-compatible spellings): root `individual_limit`
+  // wins, `spend_control.individual_limit` is the fallback. limit/used arrive
+  // as numbers or numeric strings; any malformation drops only this meter.
+  const spendRaw = payload.individual_limit
+    ?? (payload.spend_control && typeof payload.spend_control === 'object'
+      && !Array.isArray(payload.spend_control)
+      ? payload.spend_control.individual_limit : undefined);
+  if (spendRaw && typeof spendRaw === 'object' && !Array.isArray(spendRaw)) {
+    const spendLimit = number(spendRaw.limit) ?? numberOrNullString(spendRaw.limit);
+    const spendUsed = number(spendRaw.used) ?? numberOrNullString(spendRaw.used);
+    if (spendLimit !== null && spendLimit > 0 && spendUsed !== null && spendUsed >= 0
+      && !meters.some((meter) => meter.id === 'monthly')) {
+      const spendMeter = {
+        id: 'monthly',
+        label: 'Month',
+        utilization: Math.max(0, Math.min(100, spendUsed / spendLimit * 100)),
+        amountUsed: spendUsed,
+        amountLimit: spendLimit,
+      };
+      const spendReset = number(spendRaw.reset_at) ?? number(spendRaw.resets_at);
+      if (spendReset !== null && spendReset > 0) {
+        spendMeter.resetsAt = new Date(spendReset * 1000).toISOString();
+      }
+      meters.push(spendMeter);
+    }
+  }
   const reached = limit.limit_reached === true || limit.allowed === false;
   const planLabel = ({ free: 'Free', plus: 'Plus', pro: 'Pro', team: 'Team',
     business: 'Business', enterprise: 'Enterprise' })[
@@ -115,10 +141,30 @@ export function parseCodexUsage(payload, now = new Date()) {
     meters,
     planLabel,
     resetCredits,
+    creditBalance: extractCreditBalance(payload.credits),
     emptyReason: meters.length ? undefined : reached ? 'limitReached' : 'noWindow',
     fetchedAt: now,
     dataAsOf: now,
   });
+}
+
+/**
+ * The API-credit balance (`credits.balance`) — a number or numeric string, and
+ * only a fact when the account has credits and they are not unlimited.
+ */
+function extractCreditBalance(credits) {
+  if (!credits || typeof credits !== 'object' || Array.isArray(credits)
+    || credits.hasCredits !== true || credits.unlimited === true) return undefined;
+  const raw = credits.balance;
+  const balance = typeof raw === 'number' ? raw
+    : typeof raw === 'string' && raw.trim() ? Number(raw) : null;
+  return balance !== null && Number.isFinite(balance) && balance >= 0 ? balance : undefined;
+}
+
+function numberOrNullString(value) {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function retryable(now, message = 'Codex quota request failed') {

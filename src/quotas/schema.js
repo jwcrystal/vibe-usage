@@ -161,6 +161,7 @@ export function quotaResult({
   planLabel,
   resetCredits,
   resetCreditsAt,
+  creditBalance,
   fetchedAt = new Date(),
   dataAsOf = fetchedAt,
   message,
@@ -197,6 +198,13 @@ export function quotaResult({
       .map((item) => optionalISODate(item, 'resetCreditsAt'))
       .filter((item) => item !== undefined);
     if (dates.length) result.resetCreditsAt = dates;
+  }
+  if (creditBalance !== undefined && creditBalance !== null) {
+    if (typeof creditBalance !== 'number' || !Number.isFinite(creditBalance)
+      || creditBalance < 0 || creditBalance > 1e9) {
+      throw new TypeError('creditBalance must be a non-negative finite number');
+    }
+    result.creditBalance = creditBalance;
   }
   if (typeof planLabel === 'string' && planLabel.trim()) result.planLabel = planLabel.trim();
   if (typeof message === 'string' && message.trim()) result.message = message.trim();

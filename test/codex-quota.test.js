@@ -100,6 +100,43 @@ test('Codex quota reads auth only for request, retries changed auth once, and ne
   }
 });
 
+test('monthly spend cap and credit balance project into the result', () => {
+  const now = new Date('2026-01-01T00:00:00Z');
+  const parsed = parseCodexUsage({
+    rate_limit: null,
+    individual_limit: { limit: '70.00', used: '24.41', reset_at: 1_769_904_000 },
+    credits: { hasCredits: true, unlimited: false, balance: '12.50' },
+  }, now);
+  assert.equal(parsed.status, 'ok');
+  const monthly = parsed.meters[0];
+  assert.equal(monthly.id, 'monthly');
+  assert.equal(monthly.amountUsed, 24.41);
+  assert.equal(monthly.amountLimit, 70);
+  assert.equal(monthly.resetsAt, '2026-02-01T00:00:00.000Z');
+  assert.equal(parsed.creditBalance, 12.5);
+
+  // Nested spend_control fallback.
+  const nested = parseCodexUsage({
+    rate_limit: null,
+    spend_control: { individual_limit: { limit: 100, used: 30 } },
+  }, now);
+  assert.equal(nested.meters[0].amountUsed, 30);
+
+  // Malformed spend data drops only the meter, never the whole read.
+  const broken = parseCodexUsage({
+    rate_limit: null,
+    individual_limit: { limit: 'free-form', used: 1 },
+  }, now);
+  assert.equal(broken.status, 'no_data');
+  assert.equal(broken.meters.length, 0);
+
+  // Unlimited credit accounts state no balance.
+  assert.equal(parseCodexUsage({
+    rate_limit: null,
+    credits: { hasCredits: true, unlimited: true, balance: 5 },
+  }, now).creditBalance, undefined);
+});
+
 test('resetCreditsAt is a bounded list of valid ISO dates', () => {
   const base = { id: 'codex', status: 'ok' };
   assert.throws(() => quotaResult({ ...base, resetCreditsAt: 'nope' }));
