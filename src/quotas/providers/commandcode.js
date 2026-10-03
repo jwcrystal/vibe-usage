@@ -187,25 +187,57 @@ function windowMeter(id, label, raw, windowSeconds) {
 }
 
 /**
- * The monthly pool: the credits endpoint's `monthlyCredits` (remaining) plus
- * the summary's `totalMonthlyCredits` (spent this cycle) are the two live
- * sides that add up to the granted pool. Both are required; neither a cap nor
- * a rate is invented when one is missing. The cycle renewal comes from the
- * subscription record's `currentPeriodEnd` (`0`/absent stays absent, and a
- * calendar month carries no fixed window duration).
+ * Static catalog of CommandCode subscription plans → monthly credit allowance
+ * (USD), mirroring the official pricing page. The credits endpoint exposes the
+ * *remaining* `monthlyCredits`, never the plan total, so the total must come
+ * from the grant field or this table. Only the documented `individual-*` plan
+ * ids carry an entry; unknown plans fall back to the remaining+spent sum.
  */
-function monthlyMeter(credits, summary, periodEnd) {
+const MONTHLY_GRANT_USD = new Map([
+  ['individual-go', 10],
+  ['individual-goat', 70],
+  ['individual-pro', 30],
+  ['individual-pro-v1', 80],
+  ['individual-max', 150],
+  ['individual-ultra', 300],
+]);
+
+function planMonthlyTotalUSD(subscriptionData) {
+  if (!isRecord(subscriptionData)) return null;
+  const status = typeof subscriptionData.status === 'string'
+    ? subscriptionData.status.trim().toLowerCase() : '';
+  if (!PLAN_BEARING_STATUSES.has(status)) return null;
+  const planId = typeof subscriptionData.planId === 'string'
+    ? subscriptionData.planId.trim().toLowerCase() : '';
+  const usd = MONTHLY_GRANT_USD.get(planId);
+  return usd === undefined ? null : usd;
+}
+
+/**
+ * The monthly pool. The cap is the *grant*: the credits response states it
+ * directly (`monthlyCreditsGranted`), the plan catalog publishes it per plan
+ * id, and remaining+spent is only the last resort — purchased top-ups make
+ * that sum drift above the real grant. `used` is the clamped remainder of the
+ * grant, never invented when the remaining side is missing.
+ */
+function monthlyMeter(credits, summary, periodEnd, planTotal) {
   const remaining = isRecord(credits) ? finiteNumber(credits.monthlyCredits) : null;
+  if (remaining === null || remaining < 0) return null;
+  const granted = isRecord(credits) ? finiteNumber(credits.monthlyCreditsGranted) : null;
   const spent = isRecord(summary) ? finiteNumber(summary.totalMonthlyCredits) : null;
-  if (remaining === null || remaining < 0 || spent === null || spent < 0) return null;
-  const cap = remaining + spent;
-  if (!(cap > 0)) return null;
+  let total = granted !== null && granted > 0 ? granted : planTotal;
+  if (!(total > 0)) {
+    if (spent === null || spent < 0) return null;
+    total = remaining + spent;
+  }
+  if (!(total > 0)) return null;
+  const used = Math.max(0, Math.min(total, total - remaining));
   const meter = {
     id: 'monthly',
     label: 'Month',
-    utilization: clampPercent(spent / cap * 100),
-    amountUsed: spent,
-    amountLimit: cap,
+    utilization: clampPercent(used / total * 100),
+    amountUsed: used,
+    amountLimit: total,
   };
   if (periodEnd) meter.resetsAt = periodEnd.toISOString();
   return meter;
@@ -242,7 +274,8 @@ export function projectCommandcodeQuota(sources = {}) {
   }
 
   const usage = answered(sources.usage) ? sources.usage : undefined;
-  const monthly = monthlyMeter(creditsRecord, usage, periodEnd);
+  const monthly = monthlyMeter(creditsRecord, usage, periodEnd,
+    planMonthlyTotalUSD(subscriptionData));
   if (monthly) meters.push(monthly);
 
   return { meters, planLabel };

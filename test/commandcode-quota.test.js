@@ -187,10 +187,10 @@ test('Command Code fetch reads only apiKey, calls the four documented endpoints,
       { id: 'weekly', label: '7d', utilization: 30,
         windowSeconds: 604_800, resetsAt: '2026-10-05T00:00:00.000Z',
         amountUsed: 30, amountLimit: 100 },
-      // Monthly: spent 40 / (remaining 60 + spent 40) = 40%, renewal from the
-      // subscription's currentPeriodEnd, no fixed duration for a calendar month.
-      { id: 'monthly', label: 'Month', utilization: 40,
-        resetsAt: '2026-11-01T00:00:00.000Z', amountUsed: 40, amountLimit: 100 },
+      // Monthly: the catalog grant (individual-max = $150) is the cap; the
+      // credits response states $60 remaining → $90 spent.
+      { id: 'monthly', label: 'Month', utilization: 60,
+        resetsAt: '2026-11-01T00:00:00.000Z', amountUsed: 90, amountLimit: 150 },
     ]);
 
     // No key material, identity, org, or subscription ids reach the result,
@@ -528,6 +528,46 @@ test('meter dollar amounts travel paired and stay non-negative over a positive c
   assert.equal(ok.meters[0].amountLimit, 70);
 });
 
+test('monthly cap prefers monthlyCreditsGranted, then the plan catalog, then the spent sum', () => {
+  const usage = { success: true, totalMonthlyCredits: 40 };
+  const monthlyOf = (sources) => projectCommandcodeQuota(sources)
+    .meters.find((meter) => meter.id === 'monthly');
+
+  // The credits response's grant field wins over everything.
+  const granted = monthlyOf({
+    subscriptions: { success: true, data: { status: 'active', planId: 'individual-goat' } },
+    credits: { credits: { monthlyCredits: 20, monthlyCreditsGranted: 70 } },
+    usage,
+  });
+  assert.equal(granted.amountLimit, 70);
+  assert.equal(granted.amountUsed, 50);
+
+  // Otherwise the plan catalog's published allowance is the cap.
+  const catalog = monthlyOf({
+    subscriptions: { success: true, data: { status: 'active', planId: 'individual-goat' } },
+    credits: { credits: { monthlyCredits: 20 } },
+    usage,
+  });
+  assert.equal(catalog.amountLimit, 70);
+  assert.equal(catalog.amountUsed, 50);
+
+  // Unknown plan: the remaining+spent sum is the last resort.
+  const unknown = monthlyOf({
+    credits: { credits: { monthlyCredits: 20 } },
+    usage,
+  });
+  assert.equal(unknown.amountLimit, 60);
+  assert.equal(unknown.amountUsed, 40);
+
+  // A canceled subscription never gets a catalog cap.
+  const canceled = monthlyOf({
+    subscriptions: { success: true, data: { status: 'canceled', planId: 'individual-goat' } },
+    credits: { credits: { monthlyCredits: 20 } },
+    usage,
+  });
+  assert.equal(canceled.amountLimit, 60);
+});
+
 test('plan labels come from the allowlisted planId vocabulary only', () => {
   const cases = [
     ['individual-go', 'Go'],
@@ -811,8 +851,13 @@ test('billing legs fail independently: valid meters survive, failures fail close
       });
       assert.equal(result.status, 'ok');
       assert.equal(result.planLabel, 'Max 10×');
-      // The missing summary spend drops only the monthly pool.
-      assert.deepEqual(result.meters.map(meter => meter.id), ['five-hour', 'weekly']);
+      // The missing summary spend no longer drops the monthly pool: the plan
+      // catalog grants the cap ($150 for individual-max) and the credits
+      // response the remainder.
+      assert.deepEqual(result.meters.map(meter => meter.id), ['five-hour', 'weekly', 'monthly']);
+      const monthly = result.meters.find((meter) => meter.id === 'monthly');
+      assert.equal(monthly.amountLimit, 150);
+      assert.equal(monthly.amountUsed, 90);
       assert.equal(calls.length, 4);
       assert.equal(JSON.stringify(result).includes('summary-debug-body-must-not-appear'), false);
     } finally {
