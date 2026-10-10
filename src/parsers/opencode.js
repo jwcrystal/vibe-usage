@@ -10,6 +10,7 @@ const V1_QUERY = `SELECT id, session_id AS sessionID,
     json_extract(data, '$.role') AS role,
     json_extract(data, '$.time.created') AS created,
     coalesce(json_extract(data, '$.modelID'), json_extract(data, '$.model.modelID')) AS modelID,
+    coalesce(json_extract(data, '$.providerID'), json_extract(data, '$.model.providerID')) AS providerID,
     json_extract(data, '$.tokens') AS tokens,
     json_extract(data, '$.path.root') AS rootPath
     FROM message ORDER BY id`;
@@ -26,6 +27,7 @@ function v2Query(sessionTable) {
     m.type AS role,
     coalesce(json_extract(m.data, '$.time.created'), m.time_created) AS created,
     coalesce(json_extract(m.data, '$.model.id'), json_extract(m.data, '$.modelID')) AS modelID,
+    coalesce(json_extract(m.data, '$.model.providerID'), json_extract(m.data, '$.providerID')) AS providerID,
     json_extract(m.data, '$.tokens') AS tokens,
     s.directory AS directory
     FROM session_message m
@@ -71,6 +73,7 @@ function readJson(path) {
       rows.push({ id: data.id || basename(file, '.json'), sessionID: dir.name,
         role: data.role, created: data.time?.created,
         modelID: data.modelID || data.model?.modelID,
+        providerID: data.model?.providerID || data.providerID,
         tokens: data.tokens, rootPath: data.path?.root });
     }
   }
@@ -120,6 +123,10 @@ export async function parse({ extraRoots = [] } = {}) {
     const tokens = row.tokens;
     if (!row.modelID || !tokens || (!tokens.input && !tokens.output)) continue;
     entries.push({ ...base, model: row.modelID,
+      // Billing provider (Command Code catalog / OpenAI / OpenCode Zen / a
+      // local OMLX). A router can serve one model id through several providers
+      // at different rates, so this lets the price table pick the right layer.
+      ...(row.providerID ? { provider: row.providerID } : {}),
       inputTokens: tokens.input || 0, outputTokens: tokens.output || 0,
       cachedInputTokens: tokens.cache?.read || 0, reasoningOutputTokens: tokens.reasoning || 0,
       // The store writes one cache-write total with no per-TTL breakdown and no

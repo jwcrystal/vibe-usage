@@ -204,6 +204,7 @@ test('OpenCode reads the 2.x session_message projection without a legacy message
     source: 'opencode',
     model: 'claude-opus-4-6',
     project: 'v2-project',
+    provider: 'opencode',
     bucketStart: '2026-09-12T00:00:00.000Z',
     firstCallAt: '2026-09-12T00:00:01.000Z',
     lastCallAt: '2026-09-12T00:00:01.000Z',
@@ -218,6 +219,24 @@ test('OpenCode reads the 2.x session_message projection without a legacy message
   assert.equal(result.sessions.length, 1);
   assert.equal(result.sessions[0].userMessageCount, 1);
   assert.equal(result.sessions[0].messageCount, 2);
+}));
+
+test('OpenCode records the billing provider and leaves it unset when the store has none', async () => fixture(async (root, primary) => {
+  // Legacy (v1) layout: providerID sits beside modelID at the top level.
+  sqlite(primary, [
+    { id: 'u', sessionID: 'ses_cc', role: 'user', time: { created: start }, path: { root: '/work/p' } },
+    { id: 'a', sessionID: 'ses_cc', role: 'assistant', time: { created: start + 1000 },
+      modelID: 'deepseek/deepseek-v4.1-flash', providerID: 'commandcode',
+      tokens: { input: 5, output: 1, cache: { read: 0 } }, path: { root: '/work/p' } },
+  ]);
+  const extra = join(root, 'extra');
+  sqlite(extra, rows('ses_plain', 'plain-model'));
+  const result = await parse({ extraRoots: [extra] });
+  const routed = result.buckets.find(b => b.model === 'deepseek/deepseek-v4.1-flash');
+  const plain = result.buckets.find(b => b.model === 'plain-model');
+  assert.equal(routed.provider, 'commandcode');
+  // No providerID in the record → the key is absent, never empty string.
+  assert.equal('provider' in plain, false);
 }));
 
 test('OpenCode reads a store whose session row uses the pre-split session table name', async () => fixture(async (root, primary) => {

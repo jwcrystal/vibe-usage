@@ -85,3 +85,21 @@ test('aggregateToBuckets keeps distinct hostnames in distinct buckets', () => {
     { hostname: undefined, inputTokens: 4 },
   ]);
 });
+
+test('aggregateToBuckets carries an optional provider without keying on it', () => {
+  // A router (OpenCode) can serve one model id through two providers in the
+  // same half-hour. Provider is an attribute, not a key dimension: adding it to
+  // the key would re-key existing rows and double-count on the server.
+  const buckets = aggregateToBuckets([
+    entry({ source: 'opencode', model: 'gpt-5.6-sol', provider: 'commandcode', inputTokens: 1 }),
+    entry({ source: 'opencode', model: 'gpt-5.6-sol', provider: 'opencode', inputTokens: 2 }),
+  ]);
+  assert.equal(buckets.length, 1);
+  assert.equal(buckets[0].provider, 'commandcode'); // first entry wins
+  assert.equal(buckets[0].inputTokens, 3);
+});
+
+test('aggregateToBuckets omits provider when no entry supplies one', () => {
+  const buckets = aggregateToBuckets([entry({ inputTokens: 1 })]);
+  assert.equal('provider' in buckets[0], false);
+});

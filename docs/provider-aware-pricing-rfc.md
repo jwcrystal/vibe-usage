@@ -1,7 +1,7 @@
-# provider 欄位：路由器來源（OpenCode）的按供應商計價（設計草案，尚未實現）
+# provider 欄位：路由器來源（OpenCode）的按供應商計價
 
-狀態：調查與設計草案。bucket 的 `provider` 欄位、`aggregateToBuckets()` 的傳遞、
-`opencode.js` 的寫入、以及 `estimateCost()` 的查表順序均尚未實現或發布。
+狀態：已於本機 stack（fork CLI + `vibe-usage-local-server`）實作。上游 `vibe-cafe`
+尚未處理該欄位，也尚未發布。
 
 ## 已驗證的問題
 

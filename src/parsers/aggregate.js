@@ -19,6 +19,10 @@ export function roundToHalfHour(date) {
 // Anything longer aborts the whole INSERT chunk with 22001, so clamp here.
 const MODEL_MAX_LENGTH = 100;
 const PROJECT_MAX_LENGTH = 200;
+// Billing-provider id (e.g. OpenCode's `commandcode` / `openai`). No server
+// column exists yet, so this is a local/forward-compatible attribute; clamp to
+// a sane length anyway so a malformed store value cannot bloat the payload.
+const PROVIDER_MAX_LENGTH = 64;
 
 // Server token columns are bigint — a single fractional/NaN value aborts the
 // whole INSERT chunk with 22P02, taking every other tool's rows in the batch
@@ -35,6 +39,12 @@ export function aggregateToBuckets(entries) {
   for (const e of entries) {
     const model = String(e.model || 'unknown').slice(0, MODEL_MAX_LENGTH);
     const project = String(e.project || 'unknown').slice(0, PROJECT_MAX_LENGTH);
+    // Optional billing provider. A router CLI (OpenCode) can emit one model id
+    // through several providers (Command Code catalog vs OpenCode Zen), which
+    // bill it at different rates. Pricing uses this to pick a provider-scoped
+    // price layer. It is deliberately NOT a dimension of the key below: adding
+    // one would re-key every existing row and double-count on the server.
+    const provider = e.provider ? String(e.provider).slice(0, PROVIDER_MAX_LENGTH) : '';
     const bucketStart = roundToHalfHour(e.timestamp).toISOString();
     const key = `${e.source}|${model}|${project}|${e.hostname || ''}|${bucketStart}`;
 
@@ -43,6 +53,7 @@ export function aggregateToBuckets(entries) {
         source: e.source,
         model,
         project,
+        ...(provider ? { provider } : {}),
         // Cloud-sourced parsers (cursor) pre-set a fixed hostname sentinel; it
         // must survive aggregation, or sync.js stamps the machine hostname and
         // every machine gets its own duplicate row server-side.
@@ -68,6 +79,10 @@ export function aggregateToBuckets(entries) {
     }
 
     const b = map.get(key);
+    // The key omits provider, so a later entry in the same half-hour may be the
+    // first to carry one (mixed router traffic). Capture it when the bucket
+    // does not have it yet; leave it unset when no entry has one.
+    if (provider && !b.provider) b.provider = provider;
     const callMs = e.timestamp instanceof Date ? e.timestamp.getTime() : Number(e.timestamp);
     if (Number.isFinite(callMs)) {
       if (callMs < b._firstCallMs) b._firstCallMs = callMs;
