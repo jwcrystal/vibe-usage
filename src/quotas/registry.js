@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { loadCachedQuota, saveCachedQuota } from './cache.js';
 import { codexQuotaDetected, fetchCodexQuota } from './providers/codex.js';
-import { fetchClaudeCodeQuota, findClaudeBinary } from './providers/claude-code.js';
+import { claudeCredentialsPresent, fetchClaudeCodeQuota, findClaudeBinary } from './providers/claude-code.js';
 import { fetchCommandcodeQuota } from './providers/commandcode.js';
 import { fetchGrokQuota } from './providers/grok.js';
 import { fetchKimiCodeQuota } from './providers/kimi-code.js';
@@ -102,7 +102,11 @@ export function discoverQuotaProducts({
     },
     {
       id: 'claude-code',
-      detected: findClaudeBinary({ environment, home }) !== null,
+      // A readable login is enough: the OAuth route needs no CLI binary. The
+      // Keychain (macOS) is only discoverable by reading it, so a Keychain-only
+      // machine still shows as undetected here while its fetch path works.
+      detected: findClaudeBinary({ environment, home }) !== null
+        || claudeCredentialsPresent({ environment, home }),
       fetchable: true,
     },
     {
