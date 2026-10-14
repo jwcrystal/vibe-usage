@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
-  fetchClaudeCodeQuota, parseClaudeOAuthUsage, parseClaudeUsage, planLabelFromCredential,
+  fetchClaudeCodeQuota, findClaudeBinary, parseClaudeOAuthUsage, parseClaudeUsage,
+  planLabelFromCredential,
 } from '../src/quotas/providers/claude-code.js';
 
 // The OAuth route reads whatever login this machine happens to have, so a test
@@ -137,6 +138,46 @@ test('Claude quota probe kills a child that ignores SIGTERM and returns a generi
   }
 });
 
+test('Claude binary discovery reaches version-manager installs on a minimal PATH', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-claude-discovery-'));
+  const minimal = { PATH: '/usr/bin:/bin' };
+  const plantBinary = (path) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '#!/bin/sh\n');
+    chmodSync(path, 0o700);
+  };
+  try {
+    // A launchd daemon has no node bin dir on PATH, so the tree a version
+    // manager installs into is the only place left to look.
+    const shim = join(root, '.local', 'share', 'mise', 'shims', 'claude');
+    plantBinary(shim);
+    assert.equal(findClaudeBinary({ environment: minimal, home: root }), shim);
+
+    // No shim: the per-version install is the fallback, newest first.
+    const older = join(root, '.nvm', 'versions', 'node', 'v20.9.0', 'bin', 'claude');
+    const newer = join(root, '.nvm', 'versions', 'node', 'v22.1.0', 'bin', 'claude');
+    rmSync(join(root, '.local'), { recursive: true, force: true });
+    plantBinary(older);
+    plantBinary(newer);
+    assert.equal(findClaudeBinary({ environment: minimal, home: root }), newer);
+
+    // PATH still wins: the CLI the user actually runs is the one to probe.
+    const onPath = join(root, 'pathbin', 'claude');
+    plantBinary(onPath);
+    assert.equal(findClaudeBinary({
+      environment: { ...minimal, PATH: `${join(root, 'pathbin')}:${minimal.PATH}` }, home: root,
+    }), onPath);
+
+    // An explicit override outranks everything.
+    const override = join(root, 'custom', 'claude');
+    plantBinary(override);
+    assert.equal(findClaudeBinary({
+      environment: { ...minimal, VIBE_USAGE_CLAUDE_BIN: override }, home: root,
+    }), override);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 test('Claude OAuth parser reads top-level windows and the money unit the payload declares', () => {
   const result = parseClaudeOAuthUsage(oauthPayload,
     { plan: 'Pro', now: new Date('2026-10-02T00:00:00Z') });

@@ -173,6 +173,32 @@ function executable(path) {
   try { accessSync(path, constants.X_OK); return true; } catch { return false; }
 }
 
+// Node CLIs installed by a version manager live under that manager's own tree,
+// never in a system prefix, and a GUI app or launchd daemon starts with a
+// minimal PATH. Probing PATH alone therefore reported "Claude Code CLI is not
+// installed" on a machine where the tool sat in ~/.nvm or ~/.local/share/mise.
+// Shims first (they resolve the active version), then each installed version.
+function versionManagerCandidates(home) {
+  const paths = [
+    join(home, '.local', 'share', 'mise', 'shims', 'claude'),
+    join(home, '.volta', 'bin', 'claude'),
+    join(home, '.asdf', 'shims', 'claude'),
+    join(home, '.bun', 'bin', 'claude'),
+    join(home, '.local', 'share', 'fnm', 'aliases', 'default', 'bin', 'claude'),
+  ];
+  for (const root of [
+    join(home, '.nvm', 'versions', 'node'),
+    join(home, '.local', 'share', 'mise', 'installs', 'node'),
+  ]) {
+    let versions;
+    try { versions = readdirSync(root); } catch { continue; }
+    for (const version of versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) {
+      paths.push(join(root, version, 'bin', 'claude'));
+    }
+  }
+  return paths;
+}
+
 export function findClaudeBinary({ environment = process.env, home = homedir() } = {}) {
   const explicit = environment.VIBE_USAGE_CLAUDE_BIN?.trim();
   const candidates = [
@@ -180,6 +206,11 @@ export function findClaudeBinary({ environment = process.env, home = homedir() }
     join(home, '.local', 'bin', 'claude'),
     join(home, '.claude', 'local', 'claude'),
     ...((environment.PATH || '').split(delimiter).filter(Boolean).map(dir => join(dir, 'claude'))),
+    ...versionManagerCandidates(home),
+    // The two standard install prefixes, spelled out: neither is on a launchd
+    // daemon's PATH.
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
   ].filter(Boolean);
   const installed = candidates.find(path => existsSync(path) && executable(path));
   if (installed) return installed;
