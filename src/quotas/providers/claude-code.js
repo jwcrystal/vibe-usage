@@ -1,6 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, accessSync, constants } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, userInfo } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { quotaResult } from '../schema.js';
 
@@ -157,6 +157,14 @@ export function parseClaudeOAuthUsage(payload, { plan, now = new Date() } = {}) 
     planLabel: plan, fetchedAt: now, dataAsOf: now });
 }
 
+function systemUserName() {
+  try {
+    return userInfo().username || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function childEnvironment(environment = process.env) {
   const result = { ...environment };
   for (const key of [
@@ -166,6 +174,11 @@ function childEnvironment(environment = process.env) {
   const path = result.PATH || '';
   const extra = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
   result.PATH = [...new Set([...path.split(delimiter).filter(Boolean), ...extra])].join(delimiter);
+  // Measured: with USER unset, the probe answers `rate_limits_available: false`
+  // for an account that has plan limits, so a stripped service environment
+  // reports "no plan limits" instead of the quota. Supply the name rather than
+  // propagate the gap.
+  if (!result.USER) result.USER = systemUserName();
   return result;
 }
 

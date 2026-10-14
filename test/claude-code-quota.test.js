@@ -323,3 +323,45 @@ test('a rejected or unreachable Claude usage endpoint keeps an actionable status
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Mirrors the measured behaviour of the real binary: with USER unset it answers
+// `rate_limits_available: false` for an account that does have plan limits.
+const userSensitiveProtocol = `
+const NL = String.fromCharCode(10);
+let input = '';
+process.stdin.on('data', chunk => {
+  input += chunk.toString();
+  while (input.includes(NL)) {
+    const line = input.slice(0, input.indexOf(NL));
+    input = input.slice(input.indexOf(NL) + 1);
+    const request = JSON.parse(line);
+    const requestId = request.request_id;
+    const response = requestId === 'vibe-init'
+      ? { request_id: requestId, subtype: 'success', response: {} }
+      : { request_id: requestId, subtype: 'success', response: process.env.USER
+          ? { rate_limits_available: true, subscription_type: 'max',
+              rate_limits: { five_hour: { utilization: 5 } } }
+          : { rate_limits_available: false } };
+    process.stdout.write(JSON.stringify({ type: 'control_response', response }) + NL);
+  }
+});`;
+
+test('the CLI probe supplies USER when the service environment omits it', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-claude-user-'));
+  try {
+    const binary = fakeClaude(root, userSensitiveProtocol);
+    // A launchd job, a container, or any stripped parent can have no USER; the
+    // probe must not silently degrade to "no plan limits" there.
+    const stripped = await fetchClaudeCodeQuota({
+      ...credentialFree(root),
+      environment: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`,
+        VIBE_USAGE_CLAUDE_BIN: binary },
+      now: new Date('2026-10-14T00:00:00Z'),
+    });
+    assert.equal(stripped.status, 'ok');
+    assert.equal(stripped.planLabel, 'Max');
+    assert.deepEqual(stripped.meters.map(meter => meter.id), ['five-hour']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
