@@ -25,6 +25,22 @@ test('launchd service preserves and XML-escapes CLAUDE_CONFIG_DIR', () => {
   assert.match(plist, /<string>\/tmp\/claude&amp;a&lt;b&gt;<\/string>/);
 });
 
+test('units re-apply ELECTRON_RUN_AS_NODE when the CLI ran under Electron', () => {
+  const env = { ELECTRON_RUN_AS_NODE: '1' };
+  const plist = generateLaunchdPlist('/Applications/Vibe Usage Desktop.app/Contents/MacOS/Vibe Usage Desktop', '/x/bin.js', undefined, env);
+  assert.match(plist, /<key>ELECTRON_RUN_AS_NODE<\/key>/);
+  assert.match(plist, /<string>1<\/string>/);
+  const unit = generateSystemdUnit('/x/electron', '/x/bin.js', undefined, env);
+  assert.match(unit, /Environment="ELECTRON_RUN_AS_NODE=1"/);
+  const cmd = generateWindowsTaskCmd('C:\\x\\electron.exe', 'C:\\x\\bin.js', undefined, env);
+  assert.match(cmd, /set "ELECTRON_RUN_AS_NODE=1"/);
+});
+
+test('units omit ELECTRON_RUN_AS_NODE for a plain Node install', () => {
+  assert.doesNotMatch(generateLaunchdPlist('/usr/bin/node', '/x/bin.js', undefined, {}), /ELECTRON_RUN_AS_NODE/);
+  assert.doesNotMatch(generateSystemdUnit('/usr/bin/node', '/x/bin.js', undefined, {}), /ELECTRON_RUN_AS_NODE/);
+});
+
 test('systemd service preserves MiMoCode database path overrides', () => {
   const unit = generateSystemdUnit('/usr/bin/node', '/opt/vibe-usage/bin.js', undefined, {
     MIMOCODE_HOME: '/tmp/mimo "home"',

@@ -157,6 +157,12 @@ function serviceEnvironment(claudeConfigDir, env) {
   const values = {
     CLAUDE_CONFIG_DIR: claudeConfigDir,
     ...Object.fromEntries(PRESERVED_SERVICE_ENV.map(key => [key, env[key]?.trim()])),
+    // Not a store-locating variable (hence absent from the list above): the
+    // desktop shell runs the bundled CLI through Electron in Node mode, so the
+    // unit's executable is the Electron binary (process.execPath). Re-apply the
+    // flag or launchd / systemd / Task Scheduler starts a GUI app instead of the
+    // daemon. Undefined for a plain Node install, and dropped by the filter.
+    ELECTRON_RUN_AS_NODE: env.ELECTRON_RUN_AS_NODE?.trim(),
   };
   return Object.entries(values).filter(([, value]) => value);
 }
