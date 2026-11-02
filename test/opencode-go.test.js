@@ -164,6 +164,21 @@ test('OpenCode Go data roots default to the OpenCode data directory and honor th
     ),
     ['/a/opencode', '/b/opencode']
   );
+  // OpenCode follows xdg-basedir, so a relocated data home moves the store with
+  // it. The parser reads XDG_DATA_HOME; the quota provider has to agree, or the
+  // dashboard shows usage for a store it cannot find a quota for.
+  assert.deepEqual(
+    openCodeDataRoots({ XDG_DATA_HOME: '/data' }, '/Users/example'),
+    [join('/data', 'opencode')]
+  );
+  // An explicit override outranks the data home, like it does everywhere else.
+  assert.deepEqual(
+    openCodeDataRoots(
+      { VIBE_USAGE_OPENCODE_DIRS: '/a/opencode', XDG_DATA_HOME: '/data' },
+      '/Users/example'
+    ),
+    ['/a/opencode']
+  );
 });
 
 test('OpenCode Go folds a pre-2.x auth.json login in when the credential table has no Go row', async () => withFixture(async dataRoot => {

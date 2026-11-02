@@ -26,7 +26,12 @@ export function openCodeDataRoots(environment = process.env, home = homedir()) {
   if (override) {
     return override.split(delimiter).map(value => value.trim()).filter(Boolean);
   }
-  return [join(home, '.local', 'share', 'opencode')];
+  // OpenCode keeps its data under xdg-basedir on every OS: XDG_DATA_HOME when
+  // set, <home>/.local/share otherwise. The parser (opencode-roots.js) already
+  // reads it that way; hardcoding the default here made a relocated store show
+  // its usage with no quota beside it.
+  const dataHome = environment.XDG_DATA_HOME?.trim() || join(home, '.local', 'share');
+  return [join(dataHome, 'opencode')];
 }
 
 export function openCodeDbPath(root) {
