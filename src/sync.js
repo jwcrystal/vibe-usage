@@ -61,7 +61,11 @@ async function syncSelectedQuotaSnapshots({
       if (['ok', 'no_data'].includes(product.status)) return [product];
       const emptyReason = DEFINITIVE_EMPTY_REASONS.get(product.status);
       if (!emptyReason) return [];
-      return [quotaResult({ id: product.id, status: 'no_data', emptyReason })];
+      // The plan label survives the rewrite: a dead login still belongs to a
+      // subscription, and the card should name it instead of dropping it with
+      // the meters it can no longer read.
+      return [quotaResult({ id: product.id, status: 'no_data', emptyReason,
+        planLabel: product.planLabel })];
     });
     if (!snapshots.length) {
       if (!quiet) console.log(dim('  订阅配额未能刷新，保留 server 上次成功数据。'));

@@ -297,6 +297,34 @@ test('an expired Claude login is reported instead of refreshed, and the CLI can 
   }
 });
 
+test('a credential record with no access token reads as a dead login, not a missing install', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-claude-dead-login-'));
+  try {
+    // Measured on macOS 2026-11-01: a revoked Claude Code login leaves the
+    // record, its plan, and an empty token behind in the Keychain. The plan is
+    // the whole point — the subscription is still live, so the card must not
+    // say nothing is configured here.
+    writeCredentialStore(root, {
+      accessToken: '', refreshToken: '', expiresAt: 0,
+      subscriptionType: 'pro', rateLimitTier: 'default_claude_ai',
+    });
+    let fetched = false;
+    const refused = async () => { fetched = true; return { ok: true, status: 200, json: async () => oauthPayload }; };
+
+    const dead = await fetchClaudeCodeQuota({
+      environment: {},
+      ...credentialFree(root),
+      now: new Date('2026-11-02T00:00:00Z'),
+      fetchImpl: refused,
+    });
+    assert.equal(fetched, false, 'a token-less login is never sent to the endpoint');
+    assert.equal(dead.status, 'expired_credentials');
+    assert.equal(dead.planLabel, 'Pro');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a rejected or unreachable Claude usage endpoint keeps an actionable status', async () => {
   const root = mkdtempSync(join(tmpdir(), 'vibe-claude-oauth-error-'));
   try {

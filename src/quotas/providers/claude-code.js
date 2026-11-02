@@ -407,12 +407,13 @@ async function fetchClaudeOAuthQuota({ environment, home, now, fetchImpl, readKe
   if (!credential) return null;
   const plan = planLabelFromCredential(credential);
   const token = typeof credential.accessToken === 'string' ? credential.accessToken.trim() : '';
-  if (!token) {
-    return quotaResult({ id: PRODUCT_ID, status: 'missing_credentials', meters: [],
-      planLabel: plan, fetchedAt: now, dataAsOf: now });
-  }
   const expiresAt = number(credential.expiresAt);
-  if (expiresAt !== null && expiresAt <= now.getTime()) {
+  // A credential record carrying no access token is a dead login, not a missing
+  // install: Claude Code leaves exactly that record behind when a login is
+  // revoked, and the desktop app's own sign-in never writes this record at all.
+  // Reporting it as `missing_credentials` told the dashboard that nothing was
+  // installed here — wrong, and it hid the one action that fixes it.
+  if (!token || (expiresAt !== null && expiresAt <= now.getTime())) {
     return quotaResult({ id: PRODUCT_ID, status: 'expired_credentials', meters: [],
       planLabel: plan, fetchedAt: now, dataAsOf: now });
   }

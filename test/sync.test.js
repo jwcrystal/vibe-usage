@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -390,7 +390,7 @@ test('quota sync uploads an opted-in snapshot to its bound loopback server', asy
 test('quota sync uploads definitive no-data states instead of leaving cards loading forever', async () => {
   const { root, configDir, stateDir, homeDir, codexHome } = quotaSyncFixture();
   const ingestBodies = [];
-  const run = apiUrl => execFileAsync(process.execPath, ['--input-type=module', '-e', quotaSyncCommand()], {
+  const run = (apiUrl, extraEnv = {}) => execFileAsync(process.execPath, ['--input-type=module', '-e', quotaSyncCommand()], {
     cwd: process.cwd(),
     env: {
       ...process.env,
@@ -399,6 +399,7 @@ test('quota sync uploads definitive no-data states instead of leaving cards load
       VIBE_USAGE_CONFIG_DIR: configDir,
       VIBE_USAGE_STATE_DIR: stateDir,
       CODEX_HOME: codexHome,
+      ...extraEnv,
     },
   });
   try {
@@ -494,6 +495,66 @@ test('quota sync uploads definitive no-data states instead of leaving cards load
     const [rejected] = uploads[0].quotas;
     assert.equal(rejected.status, 'no_data');
     assert.equal(rejected.emptyReason, 'unauthorized');
+
+    // A dead CLI login keeps the plan it belongs to: the card must still name
+    // the subscription while it reports that the login is gone, or the user
+    // reads "not installed" on a machine that is installed and subscribed.
+    ingestBodies.length = 0;
+    mkdirSync(join(homeDir, '.claude'), { recursive: true });
+    writeFileSync(join(homeDir, '.claude', '.credentials.json'), JSON.stringify({
+      claudeAiOauth: {
+        accessToken: '', refreshToken: '', expiresAt: 0,
+        subscriptionType: 'pro', rateLimitTier: 'default_claude_ai',
+      },
+    }));
+    const deadBinary = join(root, 'claude-dead');
+    writeFileSync(deadBinary, '#!/bin/sh\nexit 1\n');
+    chmodSync(deadBinary, 0o700);
+    await withServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/api/usage/settings') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ uploadProject: true, quotaSnapshots: true }));
+        return;
+      }
+      if (req.method === 'POST' && req.url === '/api/usage/ingest') {
+        const chunks = [];
+        req.on('data', chunk => chunks.push(chunk));
+        req.on('end', () => {
+          try {
+            const raw = Buffer.concat(chunks);
+            const body = (req.headers['content-encoding'] || '') === 'gzip'
+              ? gunzipSync(raw) : raw;
+            ingestBodies.push(JSON.parse(body.toString('utf8')));
+          } catch { /* assertion fails on the empty list */ }
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ ingested: 0, sessions: 0 }));
+        });
+        return;
+      }
+      // A token-less login must never reach the usage endpoint.
+      res.writeHead(404).end();
+    }, async apiUrl => {
+      writeFileSync(join(configDir, 'config.json'), JSON.stringify({
+        apiKey: 'vbu_quota_sync_dead_login',
+        apiUrl,
+        hostname: 'quota-sync-host',
+        quotaSyncProducts: ['claude-code'],
+        quotaSyncApiUrl: apiUrl,
+      }));
+      // The CLI probe is the fallback route; fail it fast instead of spawning
+      // this machine's real Claude install.
+      await run(apiUrl, {
+        VIBE_USAGE_CLAUDE_BIN: deadBinary,
+        CLAUDE_CONFIG_DIR: join(homeDir, '.claude'),
+      });
+    });
+    uploads = ingestBodies.filter(body => Array.isArray(body.quotas) && body.quotas.length);
+    assert.equal(uploads.length, 1);
+    const [deadLogin] = uploads[0].quotas;
+    assert.equal(deadLogin.id, 'claude-code');
+    assert.equal(deadLogin.status, 'no_data');
+    assert.equal(deadLogin.emptyReason, 'unauthorized');
+    assert.equal(deadLogin.planLabel, 'Pro');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
