@@ -1,7 +1,8 @@
-import { accessSync, constants, existsSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { loadCachedQuota, saveCachedQuota } from './cache.js';
+import { executableExists } from './executables.js';
 import { codexQuotaDetected, fetchCodexQuota } from './providers/codex.js';
 import { claudeCredentialsPresent, fetchClaudeCodeQuota, findClaudeBinary } from './providers/claude-code.js';
 import { fetchCommandcodeQuota } from './providers/commandcode.js';
@@ -20,35 +21,6 @@ const providers = new Map([
   ['commandcode', fetchCommandcodeQuota],
   ['claude-code', fetchClaudeCodeQuota],
 ]);
-
-function executableExists(name, environment, platform) {
-  const pathDelimiter = platform === 'win32' ? ';' : delimiter;
-  const candidateNames = [name];
-  if (platform === 'win32') {
-    const extensions = (environment.PATHEXT || '.COM;.EXE;.BAT;.CMD')
-      .split(';')
-      .map(value => value.trim())
-      .filter(Boolean)
-      .map(value => value.startsWith('.') ? value : `.${value}`);
-    for (const extension of extensions) {
-      candidateNames.push(`${name}${extension}`, `${name}${extension.toLowerCase()}`);
-    }
-  }
-
-  return (environment.PATH || '').split(pathDelimiter).filter(Boolean).some(directory => (
-    candidateNames.some(candidate => {
-      const path = join(directory, candidate);
-      try {
-        // Windows does not expose POSIX execute bits; file presence plus a
-        // PATHEXT executable suffix is its ordinary command-discovery rule.
-        accessSync(path, platform === 'win32' ? constants.F_OK : constants.X_OK);
-        return true;
-      } catch {
-        return false;
-      }
-    })
-  ));
-}
 
 export function discoverQuotaProducts({
   environment = process.env,

@@ -1,7 +1,8 @@
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, accessSync, constants } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
+import { findExecutableInDirectories, isExecutable, pathDelimiter } from '../executables.js';
 import { quotaResult } from '../schema.js';
 
 const PRODUCT_ID = 'claude-code';
@@ -173,17 +174,14 @@ function childEnvironment(environment = process.env) {
   ]) delete result[key];
   const path = result.PATH || '';
   const extra = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
-  result.PATH = [...new Set([...path.split(delimiter).filter(Boolean), ...extra])].join(delimiter);
+  const separator = pathDelimiter();
+  result.PATH = [...new Set([...path.split(separator).filter(Boolean), ...extra])].join(separator);
   // Measured: with USER unset, the probe answers `rate_limits_available: false`
   // for an account that has plan limits, so a stripped service environment
   // reports "no plan limits" instead of the quota. Supply the name rather than
   // propagate the gap.
   if (!result.USER) result.USER = systemUserName();
   return result;
-}
-
-function executable(path) {
-  try { accessSync(path, constants.X_OK); return true; } catch { return false; }
 }
 
 // Node CLIs installed by a version manager live under that manager's own tree,
@@ -212,20 +210,29 @@ function versionManagerCandidates(home) {
   return paths;
 }
 
-export function findClaudeBinary({ environment = process.env, home = homedir() } = {}) {
+export function findClaudeBinary({ environment = process.env, home = homedir(), platform = process.platform } = {}) {
   const explicit = environment.VIBE_USAGE_CLAUDE_BIN?.trim();
-  const candidates = [
-    explicit,
-    join(home, '.local', 'bin', 'claude'),
-    join(home, '.claude', 'local', 'claude'),
-    ...((environment.PATH || '').split(delimiter).filter(Boolean).map(dir => join(dir, 'claude'))),
+  if (explicit && isExecutable(explicit, platform)) return explicit;
+
+  // npm installs `claude.cmd` on Windows, not `claude`, so the named directories
+  // and PATH entries go through the shared PATHEXT expansion: without it a
+  // Windows machine with a healthy CLI reported as not installed and the probe
+  // — the only route a non-OAuth login has — never ran.
+  const pathDirectories = (environment.PATH || '').split(pathDelimiter(platform)).filter(Boolean);
+  const onSearchPath = findExecutableInDirectories(
+    'claude',
+    [join(home, '.local', 'bin'), join(home, '.claude', 'local'), ...pathDirectories],
+    { environment, platform },
+  );
+  if (onSearchPath) return onSearchPath;
+
+  const installed = [
     ...versionManagerCandidates(home),
     // The two standard install prefixes, spelled out: neither is on a launchd
     // daemon's PATH.
     '/opt/homebrew/bin/claude',
     '/usr/local/bin/claude',
-  ].filter(Boolean);
-  const installed = candidates.find(path => existsSync(path) && executable(path));
+  ].find(path => isExecutable(path, platform));
   if (installed) return installed;
 
   const desktopVersions = join(home, 'Library', 'Application Support', 'Claude', 'claude-code');
@@ -235,7 +242,7 @@ export function findClaudeBinary({ environment = process.env, home = homedir() }
       .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
     for (const version of versions) {
       const path = join(desktopVersions, version, 'claude.app', 'Contents', 'MacOS', 'claude');
-      if (existsSync(path) && executable(path)) return path;
+      if (isExecutable(path, platform)) return path;
     }
   } catch { /* Desktop is an optional final fallback */ }
   return null;

@@ -178,6 +178,38 @@ test('Claude binary discovery reaches version-manager installs on a minimal PATH
     rmSync(root, { recursive: true, force: true });
   }
 });
+test('Claude binary discovery reads the Windows PATHEXT forms npm installs', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-claude-windows-'));
+  // npm on Windows installs a `.cmd` shim and no extensionless file, and its
+  // presence check is file existence — there are no POSIX execute bits.
+  const plantWindowsShim = (path) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '@echo off\r\n');
+  };
+  try {
+    const onPath = join(root, 'npm', 'claude.cmd');
+    plantWindowsShim(onPath);
+    // Windows filesystems are case-insensitive, so `claude.CMD` (the PATHEXT
+    // spelling) and `claude.cmd` (the name on disk) are the same file; the
+    // comparison ignores case for the same reason Windows does.
+    assert.equal(findClaudeBinary({
+      environment: { PATH: join(root, 'npm'), PATHEXT: '.COM;.EXE;.BAT;.CMD' },
+      home: root,
+      platform: 'win32',
+    })?.toLowerCase(), onPath.toLowerCase());
+
+    // An unset PATHEXT (service-style minimal environment) still expands the
+    // documented defaults instead of falling back to the bare name only.
+    assert.equal(findClaudeBinary({
+      environment: { PATH: join(root, 'npm') },
+      home: root,
+      platform: 'win32',
+    })?.toLowerCase(), onPath.toLowerCase());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Claude OAuth parser reads top-level windows and the money unit the payload declares', () => {
   const result = parseClaudeOAuthUsage(oauthPayload,
     { plan: 'Pro', now: new Date('2026-10-02T00:00:00Z') });
