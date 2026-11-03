@@ -7,11 +7,11 @@ import { validateExtraRoot } from './extra-roots.js';
 const MAX_DESKTOP_DISCOVERY_DEPTH = 8;
 const DESKTOP_NON_SESSION_DIRS = new Set(['rpm', 'skills']);
 
-function expandHome(value) {
+function expandHome(value, home = homedir()) {
   const trimmed = value.trim().replace(/[/\\]+$/, '');
-  if (trimmed === '~') return homedir();
+  if (trimmed === '~') return home;
   if (trimmed.startsWith('~/') || trimmed.startsWith('~\\')) {
-    return join(homedir(), trimmed.slice(2));
+    return join(home, trimmed.slice(2));
   }
   return trimmed;
 }
@@ -20,25 +20,43 @@ function hasClaudeData(root) {
   return existsSync(join(root, 'projects')) || existsSync(join(root, 'transcripts'));
 }
 
-function defaultClaudeDesktopDataDir() {
-  if (process.platform === 'darwin') {
-    return join(homedir(), 'Library', 'Application Support', 'Claude');
+function defaultClaudeDesktopDataDir({
+  environment = process.env,
+  home = homedir(),
+  platform = process.platform,
+} = {}) {
+  if (platform === 'darwin') {
+    return join(home, 'Library', 'Application Support', 'Claude');
   }
-  if (process.platform === 'win32') {
-    const appData = process.env.APPDATA?.trim();
+  if (platform === 'win32') {
+    const appData = environment.APPDATA?.trim();
     return appData
-      ? join(expandHome(appData), 'Claude')
-      : join(homedir(), 'AppData', 'Roaming', 'Claude');
+      ? join(expandHome(appData, home), 'Claude')
+      : join(home, 'AppData', 'Roaming', 'Claude');
   }
-  const configHome = process.env.XDG_CONFIG_HOME?.trim();
-  return join(configHome ? expandHome(configHome) : join(homedir(), '.config'), 'Claude');
+  const configHome = environment.XDG_CONFIG_HOME?.trim();
+  return join(configHome ? expandHome(configHome, home) : join(home, '.config'), 'Claude');
 }
 
-function getClaudeDesktopDataDirs() {
-  const override = process.env.VIBE_USAGE_CLAUDE_DESKTOP_DIRS?.trim();
-  return override
-    ? override.split(delimiter).map(expandHome).filter(Boolean)
-    : [defaultClaudeDesktopDataDir()];
+/**
+ * Where Claude Desktop keeps its per-user files on this platform: Application
+ * Support on macOS, %APPDATA% on Windows, $XDG_CONFIG_HOME (or ~/.config) on
+ * Linux. Everything Desktop-adjacent lives below it — the Cowork session roots
+ * this module already walks, and the Claude Code build it ships — so the rule
+ * is stated once. `platform` and `environment` are parameters so a caller can
+ * reason about another OS and tests can drive all three shapes.
+ *
+ * VIBE_USAGE_CLAUDE_DESKTOP_DIRS replaces the list (test/relocation hook).
+ */
+export function claudeDesktopDataDirs({
+  environment = process.env,
+  home = homedir(),
+  platform = process.platform,
+} = {}) {
+  const override = environment.VIBE_USAGE_CLAUDE_DESKTOP_DIRS?.trim();
+  if (!override) return [defaultClaudeDesktopDataDir({ environment, home, platform })];
+  const separator = platform === 'win32' ? ';' : ':';
+  return override.split(separator).map(value => expandHome(value, home)).filter(Boolean);
 }
 
 function discoverDesktopRoots(dir, depth, roots, onWarning) {
@@ -78,7 +96,7 @@ function discoverDesktopRoots(dir, depth, roots, onWarning) {
  * each local-agent session below the Electron user-data directory.
  */
 export function findClaudeDesktopRoots(
-  desktopDataDirs = getClaudeDesktopDataDirs(),
+  desktopDataDirs = claudeDesktopDataDirs(),
   onWarning = () => {},
 ) {
   const roots = [];
@@ -130,7 +148,7 @@ export function getClaudeRoots({ onWarning = () => {}, extraRoots = [] } = {}) {
       // The default/configured roots remain usable if home discovery fails.
     }
 
-    for (const root of findClaudeDesktopRoots(getClaudeDesktopDataDirs(), onWarning)) {
+    for (const root of findClaudeDesktopRoots(claudeDesktopDataDirs(), onWarning)) {
       roots.push(root);
     }
   }

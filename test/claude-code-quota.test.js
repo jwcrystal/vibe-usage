@@ -210,32 +210,54 @@ test('Claude binary discovery reads the Windows PATHEXT forms npm installs', () 
   }
 });
 
-test('Claude binary discovery reaches the Claude Desktop builds', () => {
+test('Claude binary discovery reaches the Claude Desktop builds on every platform', () => {
   const root = mkdtempSync(join(tmpdir(), 'vibe-claude-desktop-'));
   const minimal = { PATH: '/usr/bin:/bin' };
-  const apps = join(root, 'Library', 'Application Support', 'Claude', 'claude-code');
-  const plantApp = (...segments) => {
-    const binary = join(apps, ...segments, 'claude.app', 'Contents', 'MacOS', 'claude');
-    mkdirSync(dirname(binary), { recursive: true });
-    writeFileSync(binary, '#!/bin/sh\n');
-    chmodSync(binary, 0o700);
-    return binary;
+  const plant = (path, { executable = true } = {}) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '#!/bin/sh\n');
+    if (executable) chmodSync(path, 0o700);
+    return path;
   };
+  const bundle = (version, ...middle) => join('claude.app', ...middle, 'Contents', 'MacOS', 'claude');
   try {
-    // Early layout: the app sits directly in the version directory.
-    const legacy = plantApp('2.0.10');
-    assert.equal(findClaudeBinary({ environment: minimal, home: root }), legacy);
+    // macOS keeps Desktop's files under "Application Support", and current
+    // builds add a per-build content hash so two builds can coexist. A walk that
+    // went straight to <version>/claude.app never reached that second shape: the
+    // machine read as "not installed", the probe that refreshes the login never
+    // ran, and the card stayed on expired_credentials.
+    const macHome = join(root, 'mac');
+    const macApps = join(macHome, 'Library', 'Application Support', 'Claude', 'claude-code');
+    const macLegacy = plant(join(macApps, '2.0.10', bundle()));
+    assert.equal(findClaudeBinary({ environment: minimal, home: macHome, platform: 'darwin' }), macLegacy);
+    const macCurrent = plant(join(macApps, '2.1.309', '5af865b9901c', bundle()));
+    assert.equal(findClaudeBinary({ environment: minimal, home: macHome, platform: 'darwin' }), macCurrent);
 
-    // Current layout: a per-build content hash holds the app so two builds can
-    // coexist. A version→app walk never reaches it, which reported a machine
-    // whose only Claude Code is Desktop's as "not installed" — and the probe
-    // that would have refreshed the login never ran.
-    const current = plantApp('2.1.309', '5af865b9901c');
-    assert.equal(findClaudeBinary({ environment: minimal, home: root }), current);
+    // Windows keeps them under %APPDATA% and installs a `.exe` leaf — there is
+    // no extensionless `claude` and no execute bit to check.
+    const winHome = join(root, 'win');
+    const appData = join(winHome, 'AppData', 'Roaming');
+    const win = plant(join(appData, 'Claude', 'claude-code', '2.1.309', '5af865b9901c', 'claude.exe'),
+      { executable: false });
+    assert.equal(findClaudeBinary({
+      environment: { PATH: 'C:\\Windows', APPDATA: appData }, home: winHome, platform: 'win32',
+    }), win);
 
-    // The newest version still wins, whichever layout it uses.
-    const newest = plantApp('2.1.310', 'aaaabbbbcccc');
-    assert.equal(findClaudeBinary({ environment: minimal, home: root }), newest);
+    // Linux follows XDG_CONFIG_HOME (or ~/.config) and uses the bare name.
+    const linuxHome = join(root, 'linux');
+    const xdg = join(linuxHome, '.config-custom');
+    const linux = plant(join(xdg, 'Claude', 'claude-code', '2.1.309', '5af865b9901c', 'claude'));
+    assert.equal(findClaudeBinary({
+      environment: { PATH: '/usr/bin:/bin', XDG_CONFIG_HOME: xdg }, home: linuxHome, platform: 'linux',
+    }), linux);
+
+    // An explicit override still wins over every discovered build.
+    const explicit = plant(join(root, 'override', 'claude'));
+    assert.equal(findClaudeBinary({
+      environment: { PATH: '/usr/bin:/bin', VIBE_USAGE_CLAUDE_BIN: explicit },
+      home: macHome,
+      platform: 'darwin',
+    }), explicit);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -4,6 +4,7 @@ import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { findExecutableInDirectories, isExecutable, pathDelimiter } from '../executables.js';
 import { quotaResult } from '../schema.js';
+import { claudeDesktopDataDirs } from '../../claude-roots.js';
 
 const PRODUCT_ID = 'claude-code';
 const DEADLINE_MS = 25_000;
@@ -213,32 +214,45 @@ function versionManagerCandidates(home) {
 // Claude Desktop ships its own Claude Code build and updates it in place, so on
 // a machine where the user never installed the CLI the only binary present is
 // this one — and it is a full Claude Code (the probe works, and running it is
-// what refreshes the stored login). Two layouts exist and both have to be
-// walked: early builds put the app directly under the version
+// what refreshes the stored login). Three things differ per platform, so none of
+// them can be hardcoded: the user-data directory (Application Support / %APPDATA%
+// / $XDG_CONFIG_HOME), the executable name (claude / claude.exe), and the bundle
+// layout. Early builds put the app directly under the version
 // (<version>/claude.app), current ones add a per-build content hash so several
 // builds can sit side by side (<version>/<hash>/claude.app). Scanning only the
 // first shape left the second reported as "not installed": the probe never ran,
 // nothing refreshed the credential, and the quota card sat on expired_credentials.
-function desktopClaudeCandidates(home) {
-  const root = join(home, 'Library', 'Application Support', 'Claude', 'claude-code');
+function desktopClaudeCandidates({ environment, home, platform }) {
   const newestFirst = (a, b) => b.localeCompare(a, undefined, { numeric: true });
-  let versions;
-  try { versions = readdirSync(root); } catch { return []; }
+  // Windows installers put a `.exe` (or a `.cmd` shim) next to the build; POSIX
+  // uses the bare name.
+  const names = platform === 'win32' ? ['claude.exe', 'claude.cmd', 'claude'] : ['claude'];
+  // The macOS app bundle, a plain binary beside the build, and a bin/ subdir.
+  const trails = [['claude.app', 'Contents', 'MacOS'], [], ['bin']];
   const candidates = [];
-  for (const version of versions
-    .filter(name => /^\d+(?:\.\d+){1,3}(?:[-+][\w.-]+)?$/.test(name))
-    .sort(newestFirst)) {
-    const versionDir = join(root, version);
-    const apps = [join(versionDir, 'claude.app')];
-    let builds;
-    try { builds = readdirSync(versionDir, { withFileTypes: true }); } catch { builds = []; }
-    for (const build of builds
-      .filter(entry => entry.isDirectory() && entry.name !== 'claude.app')
-      .map(entry => entry.name)
+  for (const dataDir of claudeDesktopDataDirs({ environment, home, platform })) {
+    const root = join(dataDir, 'claude-code');
+    let versions;
+    try { versions = readdirSync(root); } catch { continue; }
+    for (const version of versions
+      .filter(name => /^\d+(?:\.\d+){1,3}(?:[-+][\w.-]+)?$/.test(name))
       .sort(newestFirst)) {
-      apps.push(join(versionDir, build, 'claude.app'));
+      const versionDir = join(root, version);
+      const builds = [versionDir];
+      let entries;
+      try { entries = readdirSync(versionDir, { withFileTypes: true }); } catch { entries = []; }
+      for (const entry of entries
+        .filter(item => item.isDirectory() && item.name !== 'claude.app')
+        .map(item => item.name)
+        .sort(newestFirst)) {
+        builds.push(join(versionDir, entry));
+      }
+      for (const build of builds) {
+        for (const trail of trails) {
+          for (const name of names) candidates.push(join(build, ...trail, name));
+        }
+      }
     }
-    for (const app of apps) candidates.push(join(app, 'Contents', 'MacOS', 'claude'));
   }
   return candidates;
 }
@@ -268,7 +282,8 @@ export function findClaudeBinary({ environment = process.env, home = homedir(), 
   ].find(path => isExecutable(path, platform));
   if (installed) return installed;
 
-  const desktop = desktopClaudeCandidates(home).find(path => isExecutable(path, platform));
+  const desktop = desktopClaudeCandidates({ environment, home, platform })
+    .find(path => isExecutable(path, platform));
   if (desktop) return desktop;
   return null;
 }
