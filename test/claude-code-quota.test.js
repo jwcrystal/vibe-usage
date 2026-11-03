@@ -263,6 +263,58 @@ test('Claude binary discovery reaches the Claude Desktop builds on every platfor
   }
 });
 
+test('Claude binary discovery covers the installers\' documented locations', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-claude-installers-'));
+  const minimal = { PATH: '/usr/bin:/bin' };
+  const plant = (path, { executable = true } = {}) => {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, '#!/bin/sh\n');
+    if (executable) chmodSync(path, 0o700);
+    return path;
+  };
+  try {
+    // Native installer: everything but the launcher lives under
+    // ~/.local/share/claude/versions/<version>/. Replacing ~/.local/bin/claude
+    // with a script of your own is explicitly supported, so a missing launcher
+    // must not hide an install that is still there.
+    const posixHome = join(root, 'posix');
+    const native = plant(join(posixHome, '.local', 'share', 'claude', 'versions', '2.1.309', 'claude'));
+    assert.equal(findClaudeBinary({ environment: minimal, home: posixHome, platform: 'darwin' }), native);
+
+    // Windows keeps the same tree with a `.exe` leaf. Windows filesystems are
+    // case-insensitive and PATHEXT spells `.EXE` in its declared case, so the
+    // probe can report `claude.EXE` for a file written as `claude.exe` — the
+    // comparison ignores case for the same reason Windows does.
+    const winHome = join(root, 'win-native');
+    const winNative = plant(
+      join(winHome, '.local', 'share', 'claude', 'versions', '2.1.309', 'claude.exe'),
+      { executable: false },
+    );
+    assert.equal(findClaudeBinary({
+      environment: { PATH: 'C:\\Windows' }, home: winHome, platform: 'win32',
+    })?.toLowerCase(), winNative.toLowerCase());
+
+    // npm's global prefix is not always on a GUI app's PATH, and on Windows it
+    // holds a `.cmd` shim rather than a binary.
+    const npmHome = join(root, 'win-npm');
+    const appData = join(npmHome, 'AppData', 'Roaming');
+    const npmShim = plant(join(appData, 'npm', 'claude.cmd'), { executable: false });
+    assert.equal(findClaudeBinary({
+      environment: { PATH: 'C:\\Windows', APPDATA: appData }, home: npmHome, platform: 'win32',
+    })?.toLowerCase(), npmShim.toLowerCase());
+
+    // mise's Windows shims live in %LOCALAPPDATA%\mise\shims, not the POSIX tree.
+    const miseHome = join(root, 'win-mise');
+    const localAppData = join(miseHome, 'AppData', 'Local');
+    const miseShim = plant(join(localAppData, 'mise', 'shims', 'claude.exe'), { executable: false });
+    assert.equal(findClaudeBinary({
+      environment: { PATH: 'C:\\Windows', LOCALAPPDATA: localAppData }, home: miseHome, platform: 'win32',
+    })?.toLowerCase(), miseShim.toLowerCase());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Claude OAuth parser reads top-level windows and the money unit the payload declares', () => {
   const result = parseClaudeOAuthUsage(oauthPayload,
     { plan: 'Pro', now: new Date('2026-10-02T00:00:00Z') });

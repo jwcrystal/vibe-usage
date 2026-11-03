@@ -189,14 +189,42 @@ function childEnvironment(environment = process.env) {
 // never in a system prefix, and a GUI app or launchd daemon starts with a
 // minimal PATH. Probing PATH alone therefore reported "Claude Code CLI is not
 // installed" on a machine where the tool sat in ~/.nvm or ~/.local/share/mise.
-// Shims first (they resolve the active version), then each installed version.
-function versionManagerCandidates(home) {
-  const paths = [
-    join(home, '.local', 'share', 'mise', 'shims', 'claude'),
-    join(home, '.volta', 'bin', 'claude'),
-    join(home, '.asdf', 'shims', 'claude'),
-    join(home, '.bun', 'bin', 'claude'),
-    join(home, '.local', 'share', 'fnm', 'aliases', 'default', 'bin', 'claude'),
+// The trees are platform-specific: mise's Windows shims are in
+// %LOCALAPPDATA%\mise\shims, not the POSIX ~/.local/share/mise/shims, and npm's
+// global prefix is %APPDATA%\npm. Every entry is a directory, so the caller
+// resolves the platform's executable name (claude / claude.exe / claude.cmd)
+// through the same PATHEXT rule PATH uses.
+function installDirectories({ environment, home, platform }) {
+  if (platform === 'win32') {
+    const directories = [
+      join(home, 'AppData', 'Roaming', 'npm'),
+      join(home, '.volta', 'bin'),
+      join(home, '.bun', 'bin'),
+    ];
+    // A GUI launch inherits a minimal environment, so the variables are read
+    // from the injected one rather than assumed set.
+    for (const [variable, trail] of [
+      ['APPDATA', ['npm']],
+      ['LOCALAPPDATA', ['mise', 'shims']],
+    ]) {
+      const value = environment[variable]?.trim().replace(/[/\\]+$/, '');
+      if (value) directories.push(join(value, ...trail));
+    }
+    return directories;
+  }
+
+  // Shims first (they resolve the active version), then each installed version.
+  const directories = [
+    join(home, '.local', 'share', 'mise', 'shims'),
+    join(home, '.volta', 'bin'),
+    join(home, '.asdf', 'shims'),
+    join(home, '.bun', 'bin'),
+    join(home, '.local', 'share', 'fnm', 'aliases', 'default', 'bin'),
+    join(home, '.npm-global', 'bin'),
+    // The two standard install prefixes, spelled out: neither is on a launchd
+    // daemon's PATH.
+    '/opt/homebrew/bin',
+    '/usr/local/bin',
   ];
   for (const root of [
     join(home, '.nvm', 'versions', 'node'),
@@ -205,10 +233,24 @@ function versionManagerCandidates(home) {
     let versions;
     try { versions = readdirSync(root); } catch { continue; }
     for (const version of versions.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) {
-      paths.push(join(root, version, 'bin', 'claude'));
+      directories.push(join(root, version, 'bin'));
     }
   }
-  return paths;
+  return directories;
+}
+
+// The native installer keeps the real binary per version and only a launcher in
+// ~/.local/bin — the same layout on every platform (the documented uninstall
+// removes %USERPROFILE%\.local\share\claude on Windows). The docs treat
+// replacing that launcher with your own script as supported, so a missing or
+// rewritten launcher must not hide an otherwise healthy install.
+function nativeInstallerDirectories({ home }) {
+  const root = join(home, '.local', 'share', 'claude', 'versions');
+  let versions;
+  try { versions = readdirSync(root); } catch { return []; }
+  return versions
+    .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))
+    .map(version => join(root, version));
 }
 
 // Claude Desktop ships its own Claude Code build and updates it in place, so on
@@ -273,13 +315,14 @@ export function findClaudeBinary({ environment = process.env, home = homedir(), 
   );
   if (onSearchPath) return onSearchPath;
 
-  const installed = [
-    ...versionManagerCandidates(home),
-    // The two standard install prefixes, spelled out: neither is on a launchd
-    // daemon's PATH.
-    '/opt/homebrew/bin/claude',
-    '/usr/local/bin/claude',
-  ].find(path => isExecutable(path, platform));
+  const installed = findExecutableInDirectories(
+    'claude',
+    [
+      ...installDirectories({ environment, home, platform }),
+      ...nativeInstallerDirectories({ home }),
+    ],
+    { environment, platform },
+  );
   if (installed) return installed;
 
   const desktop = desktopClaudeCandidates({ environment, home, platform })
