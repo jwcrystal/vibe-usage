@@ -1,4 +1,4 @@
-import { execFile, spawn } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
@@ -210,6 +210,39 @@ function versionManagerCandidates(home) {
   return paths;
 }
 
+// Claude Desktop ships its own Claude Code build and updates it in place, so on
+// a machine where the user never installed the CLI the only binary present is
+// this one — and it is a full Claude Code (the probe works, and running it is
+// what refreshes the stored login). Two layouts exist and both have to be
+// walked: early builds put the app directly under the version
+// (<version>/claude.app), current ones add a per-build content hash so several
+// builds can sit side by side (<version>/<hash>/claude.app). Scanning only the
+// first shape left the second reported as "not installed": the probe never ran,
+// nothing refreshed the credential, and the quota card sat on expired_credentials.
+function desktopClaudeCandidates(home) {
+  const root = join(home, 'Library', 'Application Support', 'Claude', 'claude-code');
+  const newestFirst = (a, b) => b.localeCompare(a, undefined, { numeric: true });
+  let versions;
+  try { versions = readdirSync(root); } catch { return []; }
+  const candidates = [];
+  for (const version of versions
+    .filter(name => /^\d+(?:\.\d+){1,3}(?:[-+][\w.-]+)?$/.test(name))
+    .sort(newestFirst)) {
+    const versionDir = join(root, version);
+    const apps = [join(versionDir, 'claude.app')];
+    let builds;
+    try { builds = readdirSync(versionDir, { withFileTypes: true }); } catch { builds = []; }
+    for (const build of builds
+      .filter(entry => entry.isDirectory() && entry.name !== 'claude.app')
+      .map(entry => entry.name)
+      .sort(newestFirst)) {
+      apps.push(join(versionDir, build, 'claude.app'));
+    }
+    for (const app of apps) candidates.push(join(app, 'Contents', 'MacOS', 'claude'));
+  }
+  return candidates;
+}
+
 export function findClaudeBinary({ environment = process.env, home = homedir(), platform = process.platform } = {}) {
   const explicit = environment.VIBE_USAGE_CLAUDE_BIN?.trim();
   if (explicit && isExecutable(explicit, platform)) return explicit;
@@ -235,16 +268,8 @@ export function findClaudeBinary({ environment = process.env, home = homedir(), 
   ].find(path => isExecutable(path, platform));
   if (installed) return installed;
 
-  const desktopVersions = join(home, 'Library', 'Application Support', 'Claude', 'claude-code');
-  try {
-    const versions = readdirSync(desktopVersions)
-      .filter(version => /^\d+(?:\.\d+){1,3}(?:[-+][\w.-]+)?$/.test(version))
-      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
-    for (const version of versions) {
-      const path = join(desktopVersions, version, 'claude.app', 'Contents', 'MacOS', 'claude');
-      if (isExecutable(path, platform)) return path;
-    }
-  } catch { /* Desktop is an optional final fallback */ }
+  const desktop = desktopClaudeCandidates(home).find(path => isExecutable(path, platform));
+  if (desktop) return desktop;
   return null;
 }
 
@@ -388,9 +413,28 @@ function readKeychainCredential() {
   });
 }
 
+// Presence only, never the secret: `find-generic-password` without `-w` reads
+// the item's public attributes, which needs no ACL grant and so cannot raise
+// the Keychain prompt that makes reading the password unusable from a
+// background sync. On macOS this is the only place the login lives — Claude
+// Code never writes ~/.claude/.credentials.json there — so checking just the
+// file made every Keychain-only machine report 未偵測到 even though its OAuth
+// route had a perfectly good login to read.
+function keychainCredentialPresent() {
+  if (process.platform !== 'darwin') return false;
+  try {
+    execFileSync('/usr/bin/security',
+      ['find-generic-password', '-s', KEYCHAIN_SERVICE],
+      { timeout: KEYCHAIN_TIMEOUT_MS, stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function claudeCredentialsPresent({ environment = process.env, home = homedir() } = {}) {
   if (environment.VIBE_USAGE_CLAUDE_OAUTH_TOKEN?.trim()) return true;
-  return existsSync(credentialPath({ environment, home }));
+  return existsSync(credentialPath({ environment, home })) || keychainCredentialPresent();
 }
 
 export async function readClaudeCredentials({

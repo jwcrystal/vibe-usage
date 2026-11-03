@@ -210,6 +210,37 @@ test('Claude binary discovery reads the Windows PATHEXT forms npm installs', () 
   }
 });
 
+test('Claude binary discovery reaches the Claude Desktop builds', () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-claude-desktop-'));
+  const minimal = { PATH: '/usr/bin:/bin' };
+  const apps = join(root, 'Library', 'Application Support', 'Claude', 'claude-code');
+  const plantApp = (...segments) => {
+    const binary = join(apps, ...segments, 'claude.app', 'Contents', 'MacOS', 'claude');
+    mkdirSync(dirname(binary), { recursive: true });
+    writeFileSync(binary, '#!/bin/sh\n');
+    chmodSync(binary, 0o700);
+    return binary;
+  };
+  try {
+    // Early layout: the app sits directly in the version directory.
+    const legacy = plantApp('2.0.10');
+    assert.equal(findClaudeBinary({ environment: minimal, home: root }), legacy);
+
+    // Current layout: a per-build content hash holds the app so two builds can
+    // coexist. A version→app walk never reaches it, which reported a machine
+    // whose only Claude Code is Desktop's as "not installed" — and the probe
+    // that would have refreshed the login never ran.
+    const current = plantApp('2.1.309', '5af865b9901c');
+    assert.equal(findClaudeBinary({ environment: minimal, home: root }), current);
+
+    // The newest version still wins, whichever layout it uses.
+    const newest = plantApp('2.1.310', 'aaaabbbbcccc');
+    assert.equal(findClaudeBinary({ environment: minimal, home: root }), newest);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Claude OAuth parser reads top-level windows and the money unit the payload declares', () => {
   const result = parseClaudeOAuthUsage(oauthPayload,
     { plan: 'Pro', now: new Date('2026-10-02T00:00:00Z') });

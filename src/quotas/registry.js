@@ -74,9 +74,11 @@ export function discoverQuotaProducts({
     },
     {
       id: 'claude-code',
-      // A readable login is enough: the OAuth route needs no CLI binary. The
-      // Keychain (macOS) is only discoverable by reading it, so a Keychain-only
-      // machine still shows as undetected here while its fetch path works.
+      // Either a binary (whose probe can also refresh the login) or a readable
+      // login is enough: the OAuth route needs no CLI. Presence includes the
+      // macOS Keychain, where Claude Code keeps the login on that platform —
+      // its metadata is readable without an ACL prompt, so a Keychain-only
+      // machine is detected instead of reporting 未偵測到.
       detected: findClaudeBinary({ environment, home }) !== null
         || claudeCredentialsPresent({ environment, home }),
       fetchable: true,
