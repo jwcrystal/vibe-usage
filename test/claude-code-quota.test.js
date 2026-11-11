@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -697,6 +697,14 @@ test('reset credits count only the resets a grant can still give', () => {
       grants: [{ resets_left: 1, ends_at: '2026-12-01T00:00:00Z', paused: false }] },
   }, { plan: 'Pro', now }).resetCredits, undefined);
 
+  // Measured: the endpoint answers a caller whose CLI version is too old with
+  // `eligible: false, ineligible_reason: "cli_version"` and no grants — the same
+  // shape as an account holding none, which is why the User-Agent version matters.
+  assert.equal(parseClaudeOAuthUsage({
+    five_hour: { utilization: 10 },
+    cedar_ember: { eligible: false, ineligible_reason: 'cli_version', grants: [] },
+  }, { plan: 'Pro', now }).resetCredits, undefined);
+
   // The schema publishes at most eight dates; a larger inventory is cut there.
   const many = parseClaudeOAuthUsage({
     five_hour: { utilization: 10 },
@@ -730,6 +738,50 @@ test('the reset-credit query is optional and a rejection still yields the quota'
       'https://api.anthropic.com/api/oauth/usage',
     ]);
     assert.equal(result.status, 'ok');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('the usage request names the installed CLI version, symlink or not', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-claude-ua-'));
+  try {
+    writeCredentialStore(root, {
+      accessToken: 'test-token',
+      subscriptionType: 'pro',
+      expiresAt: Date.parse('2026-12-01T00:00:00Z'),
+    });
+    const snapshot = async (env) => {
+      let userAgent = null;
+      const result = await fetchClaudeCodeQuota({
+        environment: env, ...credentialFree(root),
+        now: new Date('2026-11-11T00:00:00Z'),
+        fetchImpl: async (_url, init) => {
+          userAgent = init.headers['User-Agent'];
+          return { ok: true, status: 200, json: async () => oauthPayload };
+        },
+      });
+      assert.equal(result.status, 'ok');
+      return userAgent;
+    };
+
+    // The official installer keeps the version in the path.
+    const direct = join(root, 'versions', '2.1.321', 'claude');
+    mkdirSync(dirname(direct), { recursive: true });
+    writeFileSync(direct, '#!/bin/sh\n');
+    chmodSync(direct, 0o700);
+    assert.equal(await snapshot({ VIBE_USAGE_CLAUDE_BIN: direct }),
+      'claude-cli/2.1.321 (external, cli)');
+
+    // …and a stable symlink on PATH hides it, so the link is resolved first.
+    // This is the measured shape: ~/.local/bin/claude → ~/.local/share/claude/
+    // versions/2.1.321, where an unresolved path reads as the fallback version
+    // and the inventory endpoint then answers `ineligible_reason: cli_version`.
+    const link = join(root, 'bin', 'claude');
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(direct, link);
+    assert.equal(await snapshot({ VIBE_USAGE_CLAUDE_BIN: link }),
+      'claude-cli/2.1.321 (external, cli)');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

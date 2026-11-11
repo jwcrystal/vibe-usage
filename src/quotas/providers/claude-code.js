@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { findExecutableInDirectories, isExecutable, pathDelimiter } from '../executables.js';
@@ -673,16 +673,46 @@ export async function readClaudeCredentials({
   return (await readKeychain()) || null;
 }
 
+// The endpoint gates the reset-credit inventory on the caller's CLI version: an
+// older one is answered `cedar_ember.eligible: false, ineligible_reason:
+// "cli_version"` and no grants, which is indistinguishable from an account that
+// holds none. The version therefore has to be the real one. The official
+// installer and the version managers keep it in the path
+// (…/versions/2.1.321); a stable symlink (…/bin/claude) hides it, so the link is
+// resolved before the path is read, and the installer tree is scanned when even
+// that fails.
+function claudeVersionFromBinary(binary) {
+  if (typeof binary !== 'string' || !binary) return null;
+  let resolved = null;
+  try { resolved = realpathSync(binary); } catch { /* the link target may be gone */ }
+  for (const candidate of [resolved, binary]) {
+    const match = typeof candidate === 'string'
+      ? /[\\/]versions[\\/](\d+\.\d+\.\d+)/.exec(candidate) : null;
+    if (match) return match[1];
+  }
+  return null;
+}
+
+function newestInstalledClaudeVersion(home) {
+  try {
+    return readdirSync(join(home, '.local', 'share', 'claude', 'versions'))
+      .filter(name => /^\d+\.\d+\.\d+$/.test(name))
+      .sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))[0]
+      || null;
+  } catch {
+    return null;
+  }
+}
+
 // The endpoint is served to Claude Code's own client, so a read arrives as that
-// client. The version comes from the install path when it carries one
-// (…/versions/2.1.321) and otherwise stays the constant above: asking
-// `claude --version` would spawn a process on the route that exists to avoid one.
+// client — and asks for the inventory only when the version is recent enough.
+// Asking `claude --version` would spawn a process on the route that exists to
+// avoid one, so the version comes from the install itself.
 function claudeUserAgent(environment, home) {
   let version = null;
   try {
-    const binary = findClaudeBinary({ environment, home });
-    const match = typeof binary === 'string' ? /[\\/]versions[\\/](\d+\.\d+\.\d+)/.exec(binary) : null;
-    if (match) version = match[1];
+    version = claudeVersionFromBinary(findClaudeBinary({ environment, home }))
+      || newestInstalledClaudeVersion(home);
   } catch { /* the constant is enough */ }
   return `claude-cli/${version || CLAUDE_USER_AGENT_VERSION} (external, cli)`;
 }
