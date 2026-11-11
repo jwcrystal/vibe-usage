@@ -3,6 +3,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { findExecutableInDirectories, isExecutable, pathDelimiter } from '../executables.js';
+import { blockedUntil, cooldownKey, recordRateLimit, recordSuccess } from '../cooldown.js';
 import { quotaResult } from '../schema.js';
 import { claudeDesktopDataDirs } from '../../claude-roots.js';
 
@@ -21,8 +22,14 @@ const PROCESS_ARGUMENTS = [
 // into ~/.claude, and cannot consume the window it reports. The CLI probe stays
 // as the fallback for logins only the tool can reach.
 const OAUTH_USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+// The query asks for the optional reset-credit inventory only; see
+// requestOAuthUsage for why a rejection of it must not cost the whole read.
+const OAUTH_RESET_CREDITS_QUERY = '?cedar_ember=1';
 const OAUTH_BETA = 'oauth-2025-04-20';
 const OAUTH_TIMEOUT_MS = 10_000;
+// The version the endpoint falls back to when the install path carries none;
+// the payload shape has not changed under it since the probe was measured.
+const CLAUDE_USER_AGENT_VERSION = '2.1.0';
 const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 const KEYCHAIN_TIMEOUT_MS = 2_000;
 const WINDOW_DEFINITIONS = [
@@ -74,13 +81,86 @@ export function planLabelFromCredential(credential) {
   return RATE_LIMIT_TIERS[tier];
 }
 
-// Both routes report the same four windows; only the container differs (the CLI
-// nests them under `rate_limits`, the OAuth payload does not). null means a
-// window was present but malformed, which rejects the whole payload rather than
-// publishing a half-read one.
-function windowMeters(container, now) {
+const SESSION_SECONDS = 5 * 3600;
+const WEEK_SECONDS = 7 * 86400;
+// The schema publishes at most eight reset dates; a grant past that is counted
+// but cannot be dated, so the extra inventory is dropped whole.
+const RESET_CREDIT_LIMIT = 8;
+
+// A scoped window is a carve-out of the weekly pool for one model (Claude's
+// promotional windows name it in `scope.model.display_name`), and the meter
+// list has no field to carry the name, so it rides in the id.
+function slug(value) {
+  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+// A scope that names every model is the plain weekly window in disguise;
+// publishing it next to `7d` would show one number twice.
+function scopeCoversEveryModel(model) {
+  const id = typeof model?.id === 'string' ? slug(model.id) : '';
+  const name = typeof model?.display_name === 'string' ? slug(model.display_name) : '';
+  if (name === 'all-models') return true;
+  return id === 'all-models' || id.endsWith('-all-models');
+}
+
+// Claude reports its windows twice: the flat `five_hour` / `seven_day` keys
+// older builds only knew, and a `limits` array that also carries the
+// model-scoped weekly windows (`weekly_scoped`). The array is the authority
+// where it speaks and the flat keys fill in what it does not name, because one
+// new kind in the array must never blank a working card.
+function limitMeters(container, now) {
   const meters = [];
+  const push = (id, label, utilization, resetsAt, windowSeconds) => {
+    if (meters.some(meter => meter.id === id)) return;
+    meters.push({ id, label, utilization,
+      ...(resetsAt ? { resetsAt } : {}),
+      ...(resetsAt && new Date(resetsAt) > now ? { windowSeconds } : {}),
+    });
+  };
+  if (Array.isArray(container.limits)) {
+    for (const entry of container.limits) {
+      if (!record(entry)) continue;
+      const utilization = number(entry.percent);
+      if (utilization === null || utilization < 0 || utilization > 100) continue;
+      const resetsAt = isoDate(entry.resets_at);
+      if (entry.kind === 'session') {
+        push('five-hour', '5h', utilization, resetsAt, SESSION_SECONDS);
+      } else if (entry.kind === 'weekly_all') {
+        push('weekly', '7d', utilization, resetsAt, WEEK_SECONDS);
+      } else if (entry.kind === 'weekly_scoped') {
+        const model = record(entry.scope) && record(entry.scope.model) ? entry.scope.model : null;
+        const name = typeof model?.display_name === 'string' ? model.display_name.trim() : '';
+        const id = `weekly-scoped-${slug(name)}`;
+        if (!name || id === 'weekly-scoped-' || scopeCoversEveryModel(model)) continue;
+        push(id, `7d ${name}`, utilization, resetsAt, WEEK_SECONDS);
+      }
+    }
+  }
+  // Builds that predate `limits` reported the model windows in `model_scoped`
+  // instead. Only consulted when the array named none, so an account that has
+  // both never shows one window twice.
+  if (!meters.some(meter => meter.id.startsWith('weekly-scoped-'))) {
+    for (const entry of Array.isArray(container.model_scoped) ? container.model_scoped : []) {
+      if (!record(entry)) continue;
+      const utilization = number(entry.utilization);
+      const name = typeof entry.display_name === 'string' ? entry.display_name.trim() : '';
+      if (utilization === null || utilization < 0 || utilization > 100 || !name) continue;
+      const id = `weekly-scoped-${slug(name)}`;
+      if (id === 'weekly-scoped-') continue;
+      push(id, `7d ${name}`, utilization, isoDate(entry.resets_at), WEEK_SECONDS);
+    }
+  }
+  return meters;
+}
+
+// Both routes report the same windows; only the container differs (the CLI
+// nests them under `rate_limits`, the OAuth payload does not). A flat key that
+// is present but malformed rejects the whole payload rather than publishing a
+// half-read one.
+function windowMeters(container, now) {
+  const meters = limitMeters(container, now);
   for (const [key, id, label, windowSeconds] of WINDOW_DEFINITIONS) {
+    if (meters.some(meter => meter.id === id)) continue;
     const raw = container[key];
     if (raw === undefined || raw === null) continue;
     if (!record(raw)) return null;
@@ -115,6 +195,78 @@ function extraUsageMeter(raw, scale = 1) {
     amountUsed, amountLimit };
 }
 
+// A money amount that declares its own unit (`amount_minor` of 10^`exponent`).
+// An undeclared unit is unknowable and a wrong figure is worse than none, so
+// only the percentage survives such a block.
+function money(raw) {
+  if (!record(raw)) return null;
+  if (typeof raw.currency === 'string' && raw.currency.trim().toUpperCase() !== 'USD') return null;
+  const amount = number(raw.amount_minor);
+  const exponent = number(raw.exponent);
+  if (amount === null || exponent === null) return null;
+  if (!Number.isInteger(exponent) || exponent < 0 || exponent > 6) return null;
+  return amount / 10 ** exponent;
+}
+
+// `spend` supersedes `extra_usage`: it carries `percent` and a declared unit in
+// the payload itself. Only an enabled block becomes a meter — the card's meter
+// shape has no "unavailable" state, and a 0% bar would claim budget the account
+// cannot spend.
+function spendMeter(raw) {
+  if (!record(raw) || raw.enabled !== true) return null;
+  const used = money(raw.used);
+  const limit = money(raw.limit);
+  const percent = number(raw.percent);
+  const utilization = percent !== null && percent >= 0 && percent <= 100
+    ? percent
+    : (used !== null && limit !== null && limit > 0 ? used / limit * 100 : null);
+  if (utilization === null) return null;
+  const meter = { id: 'extra-usage', label: 'Extra',
+    utilization: Math.max(0, Math.min(100, utilization)) };
+  if (used !== null && limit !== null && limit > 0) {
+    meter.amountUsed = used;
+    meter.amountLimit = limit;
+  }
+  return meter;
+}
+
+function creditBound(raw) {
+  if (raw === undefined || raw === null) return { readable: true, date: null };
+  const iso = isoDate(raw);
+  return iso === null
+    ? { readable: false, date: null }
+    : { readable: true, date: new Date(iso) };
+}
+
+// Claude Settings > Usage hands out free "limit resets", and the usage payload
+// reports them under `cedar_ember`. Only the count and the expiry are read: a
+// grant is a redemption handle, and a handle never enters a snapshot that is
+// cached and uploaded. Paused, spent, not yet started and expired grants offer
+// nothing, so they are left out.
+function resetCredits(raw, now) {
+  if (!record(raw) || raw.eligible !== true || !Array.isArray(raw.grants)) return null;
+  const expirations = [];
+  for (const grant of raw.grants) {
+    if (!record(grant) || grant.paused !== false) continue;
+    const resetsLeft = number(grant.resets_left);
+    if (resetsLeft === null || !Number.isInteger(resetsLeft) || resetsLeft <= 0) continue;
+    const startsAt = creditBound(grant.starts_at);
+    const endsAt = creditBound(grant.ends_at);
+    // A bound that cannot be read is malformed, never unbounded.
+    if (!startsAt.readable || !endsAt.readable) continue;
+    if (startsAt.date && startsAt.date > now) continue;
+    if (endsAt.date && endsAt.date <= now) continue;
+    for (let left = 0; left < resetsLeft && expirations.length < RESET_CREDIT_LIMIT; left += 1) {
+      expirations.push(endsAt.date ? endsAt.date.toISOString() : null);
+    }
+  }
+  if (!expirations.length) return null;
+  return {
+    resetCredits: expirations.length,
+    resetCreditsAt: expirations.filter(Boolean).sort(),
+  };
+}
+
 export function parseClaudeUsage(payload, now = new Date()) {
   if (!record(payload)) return null;
   if (payload.rate_limits_available === false) {
@@ -126,12 +278,18 @@ export function parseClaudeUsage(payload, now = new Date()) {
   const limits = payload.rate_limits;
   const meters = windowMeters(limits, now);
   if (!meters) return null;
+  if (!meters.length) return null;
   if (malformedExtraUsage(limits.extra_usage)) return null;
-  const extra = extraUsageMeter(limits.extra_usage);
+  // A `spend` block is authoritative even when disabled: falling back to the
+  // legacy block would publish a budget the newer field says is switched off.
+  const extra = record(limits.spend)
+    ? spendMeter(limits.spend)
+    : extraUsageMeter(limits.extra_usage);
   if (extra) meters.push(extra);
-  if (!meters.some(meter => meter.id === 'five-hour' || meter.id === 'weekly')) return null;
+  const credits = resetCredits(limits.cedar_ember, now);
   return quotaResult({ id: PRODUCT_ID, status: 'ok', meters,
-    planLabel: planLabel(payload.subscription_type), fetchedAt: now, dataAsOf: now });
+    planLabel: planLabel(payload.subscription_type), fetchedAt: now, dataAsOf: now,
+    ...(credits || {}) });
 }
 
 // The OAuth payload carries the same windows at its top level and, unlike the
@@ -143,7 +301,10 @@ export function parseClaudeOAuthUsage(payload, { plan, now = new Date() } = {}) 
   if (!meters) return null;
   const extraRaw = payload.extra_usage;
   if (malformedExtraUsage(extraRaw)) return null;
-  if (extraRaw !== undefined && extraRaw !== null) {
+  if (record(payload.spend)) {
+    const extra = spendMeter(payload.spend);
+    if (extra) meters.push(extra);
+  } else if (extraRaw !== undefined && extraRaw !== null) {
     // Money here is minor units and the payload declares its own exponent
     // (`decimal_places`, 2 => cents). An undeclared unit is unknowable, and a
     // wrong dollar figure is worse than none, so such a block is dropped whole.
@@ -151,12 +312,15 @@ export function parseClaudeOAuthUsage(payload, { plan, now = new Date() } = {}) 
     const extra = places === null ? null : extraUsageMeter(extraRaw, 10 ** places);
     if (extra) meters.push(extra);
   }
-  if (!meters.some(meter => meter.id === 'five-hour' || meter.id === 'weekly')) {
+  // A scoped-only account has no 5h or weekly window to pin the card to, but it
+  // still has a limit to report; only an empty list is the "no window" answer.
+  if (!meters.length) {
     return quotaResult({ id: PRODUCT_ID, status: 'no_data', meters: [],
       emptyReason: 'noWindow', planLabel: plan, fetchedAt: now, dataAsOf: now });
   }
+  const credits = resetCredits(payload.cedar_ember, now);
   return quotaResult({ id: PRODUCT_ID, status: 'ok', meters,
-    planLabel: plan, fetchedAt: now, dataAsOf: now });
+    planLabel: plan, fetchedAt: now, dataAsOf: now, ...(credits || {}) });
 }
 
 function systemUserName() {
@@ -509,6 +673,49 @@ export async function readClaudeCredentials({
   return (await readKeychain()) || null;
 }
 
+// The endpoint is served to Claude Code's own client, so a read arrives as that
+// client. The version comes from the install path when it carries one
+// (…/versions/2.1.321) and otherwise stays the constant above: asking
+// `claude --version` would spawn a process on the route that exists to avoid one.
+function claudeUserAgent(environment, home) {
+  let version = null;
+  try {
+    const binary = findClaudeBinary({ environment, home });
+    const match = typeof binary === 'string' ? /[\\/]versions[\\/](\d+\.\d+\.\d+)/.exec(binary) : null;
+    if (match) version = match[1];
+  } catch { /* the constant is enough */ }
+  return `claude-cli/${version || CLAUDE_USER_AGENT_VERSION} (external, cli)`;
+}
+
+// `Retry-After` is either a number of seconds or an HTTP date. Anything else is
+// ignored, which leaves the default cooldown in charge.
+function retryAfterDate(response, now) {
+  try {
+    const raw = typeof response?.headers?.get === 'function'
+      ? response.headers.get('retry-after') : null;
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+    const value = raw.trim();
+    if (/^\d+$/.test(value)) return new Date(now.getTime() + Number(value) * 1000);
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  } catch {
+    return null;
+  }
+}
+
+// The reset-credit inventory rides on the usage request as an optional query.
+// A build or an account that rejects the query still has the quota to report,
+// so one retry without it decides the read instead of a status code that only
+// concerns the optional part.
+async function requestOAuthUsage({ fetchImpl, url, headers }) {
+  const send = (target) => fetchImpl(target, {
+    headers, signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+  });
+  const first = await send(url);
+  if (first.status !== 400 && first.status !== 403) return first;
+  return send(url.split('?')[0]);
+}
+
 async function fetchClaudeOAuthQuota({ environment, home, now, fetchImpl, readKeychain }) {
   const credential = await readClaudeCredentials({ environment, home, readKeychain });
   // No local login to read: nothing here can speak for the account, so the CLI
@@ -526,25 +733,46 @@ async function fetchClaudeOAuthQuota({ environment, home, now, fetchImpl, readKe
     return quotaResult({ id: PRODUCT_ID, status: 'expired_credentials', meters: [],
       planLabel: plan, fetchedAt: now, dataAsOf: now });
   }
+  // A 429 named a wait. Asking again every sync cycle is how a background
+  // reader turns a short pause into a longer block, so the route stays off
+  // until it passes; the CLI probe still answers in the meantime.
+  const cooldown = cooldownKey(PRODUCT_ID, token);
+  const blocked = blockedUntil(cooldown, { environment, home, now });
+  if (blocked) {
+    return quotaResult({ id: PRODUCT_ID, status: 'retryable_error',
+      message: `Claude usage is rate limited until ${blocked.toISOString()}`, fetchedAt: now });
+  }
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    'anthropic-beta': OAUTH_BETA,
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    'User-Agent': claudeUserAgent(environment, home),
+  };
   try {
-    const response = await fetchImpl(OAUTH_USAGE_URL, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'anthropic-beta': OAUTH_BETA,
-        Accept: 'application/json',
-      },
-      signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
+    const response = await requestOAuthUsage({
+      fetchImpl,
+      url: OAUTH_USAGE_URL + OAUTH_RESET_CREDITS_QUERY,
+      headers,
     });
     if (response.status === 401 || response.status === 403) {
       return quotaResult({ id: PRODUCT_ID, status: 'unauthorized', meters: [],
         planLabel: plan, fetchedAt: now, dataAsOf: now });
+    }
+    if (response.status === 429) {
+      recordRateLimit(cooldown, retryAfterDate(response, now), { environment, home, now });
+      return quotaResult({ id: PRODUCT_ID, status: 'retryable_error',
+        message: 'Claude usage is rate limited', fetchedAt: now });
     }
     if (!response.ok) {
       return quotaResult({ id: PRODUCT_ID, status: 'retryable_error',
         message: `Claude usage request failed (${response.status})`, fetchedAt: now });
     }
     const result = parseClaudeOAuthUsage(await response.json(), { plan, now });
-    if (result) return result;
+    if (result) {
+      recordSuccess(cooldown, { environment, home, now });
+      return result;
+    }
     return quotaResult({ id: PRODUCT_ID, status: 'retryable_error',
       message: 'Claude usage response was not understood', fetchedAt: now });
   } catch {

@@ -385,7 +385,8 @@ test('Claude quota prefers the OAuth route, spawns nothing, and writes nothing',
     assert.equal(result.status, 'ok');
     assert.equal(result.planLabel, 'Pro');
     assert.deepEqual(result.meters.map(meter => meter.id), ['five-hour', 'weekly', 'weekly-opus']);
-    assert.equal(request.url, 'https://api.anthropic.com/api/oauth/usage');
+    assert.equal(request.url, 'https://api.anthropic.com/api/oauth/usage?cedar_ember=1');
+    assert.match(request.init.headers['User-Agent'], /^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/);
     assert.equal(request.init.headers.Authorization, 'Bearer sk-ant-oat01-private-token');
     // A quota read is read-only: the credential store is byte-identical after.
     assert.equal(readFileSync(store, 'utf8'), before);
@@ -526,6 +527,264 @@ test('the CLI probe supplies USER when the service environment omits it', async 
     assert.equal(stripped.status, 'ok');
     assert.equal(stripped.planLabel, 'Max');
     assert.deepEqual(stripped.meters.map(meter => meter.id), ['five-hour']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// Measured on 2026-11-11 against Claude Code 2.1.321: the probe reports the
+// windows twice now, and the array is where a model-scoped carve-out lives.
+const measuredLimits = [
+  { kind: 'session', group: 'session', percent: 100,
+    resets_at: '2026-11-11T06:50:00Z', severity: 'critical', is_active: true, scope: null },
+  { kind: 'weekly_all', group: 'weekly', percent: 97,
+    resets_at: '2026-11-12T15:00:00Z', severity: 'critical', is_active: false, scope: null },
+  { kind: 'weekly_scoped', group: 'weekly', percent: 65,
+    resets_at: '2026-11-12T15:00:00Z', severity: 'normal', is_active: false,
+    scope: { model: { display_name: 'Fable', id: null }, surface: null } },
+];
+
+test('the limits array names the model-scoped weekly window the flat keys cannot', () => {
+  const now = new Date('2026-11-11T06:00:00Z');
+  const result = parseClaudeUsage({
+    subscription_type: 'pro',
+    rate_limits_available: true,
+    rate_limits: {
+      five_hour: { utilization: 100, resets_at: '2026-11-11T06:50:00Z' },
+      seven_day: { utilization: 97, resets_at: '2026-11-12T15:00:00Z' },
+      limits: measuredLimits,
+    },
+  }, now);
+  assert.equal(result.status, 'ok');
+  // One row per window: the array wins over the flat keys instead of doubling them.
+  assert.deepEqual(result.meters.map(meter => meter.id),
+    ['five-hour', 'weekly', 'weekly-scoped-fable']);
+  const fable = result.meters[2];
+  assert.equal(fable.label, '7d Fable');
+  assert.equal(fable.utilization, 65);
+  assert.equal(fable.windowSeconds, 7 * 86400);
+  assert.equal(fable.resetsAt, '2026-11-12T15:00:00.000Z');
+
+  // The all-models scope is the plain weekly window in disguise.
+  const allModels = parseClaudeUsage({
+    rate_limits: {
+      limits: [...measuredLimits, { kind: 'weekly_scoped', group: 'weekly', percent: 40,
+        scope: { model: { display_name: 'All models', id: null } } }],
+    },
+  }, now);
+  assert.deepEqual(allModels.meters.map(meter => meter.id),
+    ['five-hour', 'weekly', 'weekly-scoped-fable']);
+
+  // A model-scoped account has a limit to report even with no 5h or 7d row.
+  const scopedOnly = parseClaudeOAuthUsage({ limits: [measuredLimits[2]] }, { plan: 'Pro', now });
+  assert.equal(scopedOnly.status, 'ok');
+  assert.deepEqual(scopedOnly.meters.map(meter => meter.id), ['weekly-scoped-fable']);
+  assert.equal(parseClaudeOAuthUsage({ limits: [] }, { plan: 'Pro', now }).emptyReason, 'noWindow');
+});
+
+test('an older build reports scoped windows through model_scoped only', () => {
+  const now = new Date('2026-11-11T06:00:00Z');
+  const legacy = parseClaudeUsage({
+    rate_limits: {
+      five_hour: { utilization: 12 },
+      model_scoped: [{ display_name: 'Opus', utilization: 33, resets_at: '2026-11-12T15:00:00Z' }],
+    },
+  }, now);
+  assert.deepEqual(legacy.meters.map(meter => meter.id), ['five-hour', 'weekly-scoped-opus']);
+  assert.equal(legacy.meters[1].label, '7d Opus');
+
+  // Both shapes at once must not publish the same model twice.
+  const both = parseClaudeUsage({
+    rate_limits: {
+      limits: [measuredLimits[2]],
+      model_scoped: [{ display_name: 'Fable', utilization: 65 }],
+    },
+  }, now);
+  assert.deepEqual(both.meters.map(meter => meter.id), ['weekly-scoped-fable']);
+});
+
+test('the spend block supersedes extra usage, including when it is switched off', () => {
+  const now = new Date('2026-11-11T06:00:00Z');
+  const enabled = parseClaudeUsage({
+    subscription_type: 'pro',
+    rate_limits: {
+      limits: [measuredLimits[0]],
+      spend: {
+        used: { amount_minor: 1250, currency: 'USD', exponent: 2 },
+        limit: { amount_minor: 2000, currency: 'USD', exponent: 2 },
+        percent: 62.5,
+        enabled: true,
+      },
+      extra_usage: { is_enabled: true, used_credits: 1, monthly_limit: 100 },
+    },
+  }, now);
+  const extra = enabled.meters.find(meter => meter.id === 'extra-usage');
+  // $12.50 of $20.00, and the payload's own percentage wins over a recomputed one.
+  assert.equal(extra.amountUsed, 12.5);
+  assert.equal(extra.amountLimit, 20);
+  assert.equal(extra.utilization, 62.5);
+
+  // Measured today: spend is disabled with out_of_credits while the legacy block
+  // still claims a cap. A disabled budget has no bar to draw, so it is dropped
+  // rather than published as 0% of a limit the account cannot spend.
+  const disabled = parseClaudeUsage({
+    rate_limits: {
+      limits: [measuredLimits[0]],
+      spend: {
+        used: { amount_minor: 0, currency: 'USD', exponent: 2 },
+        limit: { amount_minor: 2000, currency: 'USD', exponent: 2 },
+        percent: 0,
+        enabled: false,
+        disabled_reason: 'out_of_credits',
+      },
+      extra_usage: { is_enabled: true, used_credits: 0, monthly_limit: 2000 },
+    },
+  }, now);
+  assert.equal(disabled.meters.some(meter => meter.id === 'extra-usage'), false);
+
+  // Without a spend block the legacy block is still the answer.
+  const legacy = parseClaudeUsage({
+    rate_limits: {
+      five_hour: { utilization: 5 },
+      extra_usage: { is_enabled: true, used_credits: 12.5, monthly_limit: 35 },
+    },
+  }, now);
+  assert.equal(legacy.meters.find(meter => meter.id === 'extra-usage').amountLimit, 35);
+
+  // A non-USD amount cannot be printed with the card's dollar sign.
+  const foreign = parseClaudeUsage({
+    rate_limits: {
+      five_hour: { utilization: 5 },
+      spend: {
+        used: { amount_minor: 100, currency: 'EUR', exponent: 2 },
+        limit: { amount_minor: 2000, currency: 'EUR', exponent: 2 },
+        percent: 5,
+        enabled: true,
+      },
+    },
+  }, now);
+  const foreignExtra = foreign.meters.find(meter => meter.id === 'extra-usage');
+  assert.equal(foreignExtra.amountUsed, undefined);
+  assert.equal(foreignExtra.utilization, 5);
+});
+
+test('reset credits count only the resets a grant can still give', () => {
+  const now = new Date('2026-11-11T00:00:00Z');
+  const result = parseClaudeOAuthUsage({
+    five_hour: { utilization: 10 },
+    cedar_ember: {
+      eligible: true,
+      grants: [
+        { resets_left: 2, resets_total: 2, starts_at: '2026-11-01T00:00:00Z',
+          ends_at: '2026-12-01T00:00:00Z', paused: false },
+        { resets_left: 1, ends_at: '2026-10-01T00:00:00Z', paused: false }, // expired
+        { resets_left: 1, ends_at: '2026-12-01T00:00:00Z', paused: true }, // paused
+        { resets_left: 0, ends_at: '2026-12-01T00:00:00Z', paused: false }, // spent
+        { resets_left: 1, starts_at: '2026-12-05T00:00:00Z',
+          ends_at: '2026-12-09T00:00:00Z', paused: false }, // not started
+        { resets_left: '1', ends_at: '2026-12-01T00:00:00Z', paused: false }, // malformed
+      ],
+    },
+  }, { plan: 'Pro', now });
+  assert.equal(result.resetCredits, 2);
+  assert.deepEqual(result.resetCreditsAt,
+    ['2026-12-01T00:00:00.000Z', '2026-12-01T00:00:00.000Z']);
+
+  // Nothing eligible is the same as no inventory at all.
+  assert.equal(parseClaudeOAuthUsage({
+    five_hour: { utilization: 10 },
+    cedar_ember: { eligible: false,
+      grants: [{ resets_left: 1, ends_at: '2026-12-01T00:00:00Z', paused: false }] },
+  }, { plan: 'Pro', now }).resetCredits, undefined);
+
+  // The schema publishes at most eight dates; a larger inventory is cut there.
+  const many = parseClaudeOAuthUsage({
+    five_hour: { utilization: 10 },
+    cedar_ember: { eligible: true,
+      grants: [{ resets_left: 20, ends_at: '2026-12-01T00:00:00Z', paused: false }] },
+  }, { plan: 'Pro', now });
+  assert.equal(many.resetCredits, 8);
+  assert.equal(many.resetCreditsAt.length, 8);
+});
+
+test('the reset-credit query is optional and a rejection still yields the quota', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-claude-cedar-'));
+  try {
+    writeCredentialStore(root, {
+      accessToken: 'test-token',
+      subscriptionType: 'pro',
+      expiresAt: Date.parse('2026-12-01T00:00:00Z'),
+    });
+    const urls = [];
+    const result = await fetchClaudeCodeQuota({
+      environment: {}, ...credentialFree(root),
+      now: new Date('2026-11-11T00:00:00Z'),
+      fetchImpl: async (url) => {
+        urls.push(url);
+        if (urls.length === 1) return { ok: false, status: 400 };
+        return { ok: true, status: 200, json: async () => oauthPayload };
+      },
+    });
+    assert.deepEqual(urls, [
+      'https://api.anthropic.com/api/oauth/usage?cedar_ember=1',
+      'https://api.anthropic.com/api/oauth/usage',
+    ]);
+    assert.equal(result.status, 'ok');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a rate-limited OAuth read waits out Retry-After instead of retrying', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'vibe-claude-429-'));
+  try {
+    writeCredentialStore(root, {
+      accessToken: 'test-token',
+      subscriptionType: 'pro',
+      expiresAt: Date.parse('2026-12-01T00:00:00Z'),
+    });
+    const base = {
+      environment: {}, ...credentialFree(root),
+      now: new Date('2026-11-11T00:00:00Z'),
+    };
+    let calls = 0;
+    const limited = await fetchClaudeCodeQuota({
+      ...base,
+      fetchImpl: async () => {
+        calls += 1;
+        return { ok: false, status: 429, headers: { get: () => '120' } };
+      },
+    });
+    assert.equal(limited.status, 'retryable_error');
+    assert.match(limited.message, /rate limited/);
+
+    // Same login, same minute: the named wait is honoured instead of hammered.
+    const again = await fetchClaudeCodeQuota({
+      ...base,
+      fetchImpl: async () => {
+        calls += 1;
+        return { ok: true, status: 200, json: async () => oauthPayload };
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(again.status, 'retryable_error');
+    assert.match(again.message, /until 2026-11-11T00:02:00\.000Z/);
+
+    // Another login is not held by this one's pause.
+    writeCredentialStore(root, {
+      accessToken: 'other-token',
+      subscriptionType: 'pro',
+      expiresAt: Date.parse('2026-12-01T00:00:00Z'),
+    });
+    const other = await fetchClaudeCodeQuota({
+      ...base,
+      fetchImpl: async () => {
+        calls += 1;
+        return { ok: true, status: 200, json: async () => oauthPayload };
+      },
+    });
+    assert.equal(calls, 2);
+    assert.equal(other.status, 'ok');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
