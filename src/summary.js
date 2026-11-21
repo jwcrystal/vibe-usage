@@ -59,7 +59,7 @@ export function render(data, days, apiUrl) {
 
   for (const b of buckets) {
     const cost = Number(b.estimatedCost ?? 0);
-    const tokens = Number(b.totalTokens ?? 0);
+    const tokens = bucketTokens(b);
     totalCost += cost;
     totalTokens += tokens;
     accumulate(bySource, b.source || 'unknown', { cost, tokens });
@@ -113,6 +113,15 @@ export function render(data, days, apiUrl) {
 
   lines.push(`详情: ${dashboard}`);
   return lines.join('\n');
+}
+
+// Everything a bucket counted. totalTokens predates the cache-read column and
+// only exists as a liveness marker, so displaying it under-reported memory-cache
+// reads by orders of magnitude.
+function bucketTokens(b) {
+  return Number(b.inputTokens ?? 0) + Number(b.outputTokens ?? 0)
+    + Number(b.reasoningOutputTokens ?? 0) + Number(b.cachedInputTokens ?? 0)
+    + Number(b.cacheCreation5mTokens ?? 0) + Number(b.cacheCreation1hTokens ?? 0);
 }
 
 function accumulate(map, key, delta) {

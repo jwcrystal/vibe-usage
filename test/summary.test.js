@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { render } from '../src/summary.js';
 
 function bucket(source, model, cost, tokens) {
-  return { source, model, project: '/repo/x', estimatedCost: cost, totalTokens: tokens };
+  return {
+    source, model, project: '/repo/x', estimatedCost: cost,
+    inputTokens: tokens, outputTokens: 0, cachedInputTokens: 0,
+    reasoningOutputTokens: 0, cacheCreation5mTokens: 0, cacheCreation1hTokens: 0,
+    totalTokens: tokens,
+  };
 }
 
 const DATA = {
@@ -40,6 +45,19 @@ test('按工具 sits above 按模型 and 按项目', () => {
 test('an unknown source falls back to its raw id instead of vanishing', () => {
   const md = render({ buckets: [bucket('brand-new-tool', 'm', 1, 10)], sessions: [] }, 7, 'x');
   assert.deepEqual(toolRows(md), ['brand-new-tool']);
+});
+
+test('summary total counts every token class, not the legacy totalTokens field', () => {
+  const md = render({
+    buckets: [{
+      source: 'opencode', model: 'm', project: '/repo/x', estimatedCost: 1,
+      inputTokens: 2_000, outputTokens: 1_000, reasoningOutputTokens: 500,
+      cachedInputTokens: 8_000, cacheCreation5mTokens: 200, cacheCreation1hTokens: 300,
+      totalTokens: 3_800,
+    }],
+    sessions: [],
+  }, 7, 'x');
+  assert.match(md, /\*\*总览\*\*: \$1\.00 · 12K tokens/);
 });
 
 test('empty data still short-circuits to the 暂无数据 message', () => {
