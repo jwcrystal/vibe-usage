@@ -35,6 +35,7 @@ test('ingest encodes client metadata in the gzipped JSON body', () => {
   assert.equal(useGzip, true);
   assert.deepEqual(received.client, client);
   assert.deepEqual(received.buckets, [{ source: 'codex' }]);
+  assert.equal(received.tokenSchema, 2);
 });
 
 test('ingest includes optional quota snapshots without affecting legacy payloads', () => {

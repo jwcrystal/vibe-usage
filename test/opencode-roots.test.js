@@ -33,9 +33,9 @@ function sqlite(root, messages, name = 'opencode.db') {
 // project directory in the session row, and there is no legacy message table.
 function sqliteV2(root, { sessions = [], messages = [], sessionTable = 'session_v2' }) {
   mkdirSync(root, { recursive: true });
-  const sql = `CREATE TABLE ${sessionTable} (id TEXT PRIMARY KEY, directory TEXT);`
+  const sql = `CREATE TABLE ${sessionTable} (id TEXT PRIMARY KEY, directory TEXT, time_created INTEGER, fork_session_id TEXT);`
     + 'CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, time_created INTEGER, data TEXT);'
-    + sessions.map(s => `INSERT INTO ${sessionTable} VALUES (${quoteSql(s.id)},${quoteSql(s.directory)});`).join('')
+    + sessions.map(s => `INSERT INTO ${sessionTable} (id,directory,time_created,fork_session_id) VALUES (${quoteSql(s.id)},${quoteSql(s.directory)},${s.timeCreated ?? 'NULL'},${s.forkSessionId ? quoteSql(s.forkSessionId) : 'NULL'});`).join('')
     + messages.map(m => `INSERT INTO session_message VALUES (${quoteSql(m.id)},${quoteSql(m.sessionID)},${quoteSql(m.type)},${Number(m.time)},${quoteSql(JSON.stringify(m.data))});`).join('');
   execSql(join(root, 'opencode.db'), sql);
 }
@@ -219,6 +219,35 @@ test('OpenCode reads the 2.x session_message projection without a legacy message
   assert.equal(result.sessions.length, 1);
   assert.equal(result.sessions[0].userMessageCount, 1);
   assert.equal(result.sessions[0].messageCount, 2);
+}));
+
+test('OpenCode ignores fork copies already counted in the parent session', async () => fixture(async (root, primary) => {
+  const forkedAt = start + 5000;
+  sqliteV2(primary, {
+    sessions: [
+      { id: 'ses_parent', directory: '/work/forked' },
+      { id: 'ses_child', directory: '/work/forked', timeCreated: forkedAt, forkSessionId: 'ses_parent' },
+    ],
+    messages: [
+      v2Message('p_a1', 'ses_parent', 'assistant', start + 1000, {
+        model: { id: 'm', providerID: 'opencode' },
+        tokens: { input: 10, output: 2, reasoning: 0, cache: { read: 100, write: 0 } },
+      }),
+      // Copy of the parent's call: new row id, original timestamp.
+      v2Message('c_copy', 'ses_child', 'assistant', start + 1000, {
+        model: { id: 'm', providerID: 'opencode' },
+        tokens: { input: 10, output: 2, reasoning: 0, cache: { read: 100, write: 0 } },
+      }),
+      v2Message('c_new', 'ses_child', 'assistant', forkedAt + 1000, {
+        model: { id: 'm', providerID: 'opencode' },
+        tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 3, write: 0 } },
+      }),
+    ],
+  });
+  const result = await parse();
+  assert.equal(result.buckets.length, 1);
+  assert.equal(result.buckets[0].inputTokens, 11);
+  assert.equal(result.buckets[0].cachedInputTokens, 103);
 }));
 
 test('OpenCode records the billing provider and leaves it unset when the store has none', async () => fixture(async (root, primary) => {

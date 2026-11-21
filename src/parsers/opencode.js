@@ -55,11 +55,30 @@ function readSqlite(path) {
         : (tables.has('session') ? 'session' : null);
       rows.push(...queryDbJson(path, v2Query(sessionTable)));
     }
-    return rows;
+    return { rows, forks: readForkedSessions(path, tables) };
   } catch (err) {
     if (isSqliteUnavailableError(err)) throw sqliteUnavailableError('OpenCode');
     throw err;
   }
+}
+
+// A forked session copies its parent's history into the child with new message
+// ids but the parent's timestamps. Those calls were already recorded (and
+// billed) in the parent, so the child's copy must not count again — OpenCode's
+// own stats endpoint excludes it the same way. Only the fork time is needed:
+// every copied message predates the child's creation, every new one follows it.
+function readForkedSessions(path, tables) {
+  if (!tables.has('session_v2')) return new Map();
+  let columns;
+  try {
+    columns = new Set(queryDbJson(path, 'PRAGMA table_info(session_v2)').map(row => row.name));
+  } catch {
+    return new Map();
+  }
+  if (!columns.has('time_created') || !columns.has('fork_session_id')) return new Map();
+  const rows = queryDbJson(path, `SELECT id AS sessionID, time_created AS createdAt
+    FROM session_v2 WHERE fork_session_id IS NOT NULL AND time_created IS NOT NULL`);
+  return new Map(rows.map(row => [row.sessionID, Number(row.createdAt)]));
 }
 
 function readJson(path) {
@@ -77,7 +96,7 @@ function readJson(path) {
         tokens: data.tokens, rootPath: data.path?.root });
     }
   }
-  return rows;
+  return { rows, forks: new Map() };
 }
 
 function tokenSize(row) {
@@ -92,10 +111,13 @@ export async function parse({ extraRoots = [] } = {}) {
   const records = new Map();
   for (const store of stores) {
     try {
-      const rows = store.kind === 'sqlite' ? readSqlite(store.path) : readJson(store.path);
+      const { rows, forks } = store.kind === 'sqlite' ? readSqlite(store.path) : readJson(store.path);
       for (const [index, row] of rows.entries()) {
         const timestamp = new Date(row.created);
         if (!Number.isFinite(timestamp.getTime())) continue;
+        // Copied fork history: already counted in the parent session.
+        const forkedAt = forks.get(row.sessionID);
+        if (forkedAt !== undefined && timestamp.getTime() < forkedAt) continue;
         if (typeof row.tokens === 'string') row.tokens = JSON.parse(row.tokens);
         const sessionId = row.sessionID || 'unknown';
         // Message ids are unique within an OpenCode session. Across stores,

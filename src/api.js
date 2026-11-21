@@ -5,6 +5,10 @@ import { gzipSync } from 'node:zlib';
 
 const MAX_RETRIES = 3;
 const INITIAL_DELAY = 1000;
+// Bumped whenever a parser fix changes what a bucket counts. The local server
+// lets a higher version replace a stored snapshot even when the corrected
+// total is smaller; older schema versions can never overwrite a newer one.
+export const TOKEN_SCHEMA_VERSION = 2;
 // Always gzip: ingest bodies are repetitive JSON that compresses ~10:1, and
 // the few-byte gzip header overhead on a tiny body is irrelevant next to
 // guaranteeing no uncompressed request ever leaves the client.
@@ -42,6 +46,10 @@ export async function ingest(apiUrl, apiKey, buckets, opts, sessions) {
 
 export function encodeIngestBody(buckets, opts, sessions) {
   const payload = { buckets };
+  // Stamped once per payload rather than on every bucket so a cloud ingest
+  // that only knows the legacy schema sees no new bucket fields. The local
+  // server records it per bucket to let a corrected count replace a stale one.
+  if (buckets.length > 0) payload.tokenSchema = TOKEN_SCHEMA_VERSION;
   if (sessions && sessions.length > 0) payload.sessions = sessions;
   if (opts?.client) payload.client = opts.client;
   if (opts?.quotas && opts.quotas.length > 0) payload.quotas = opts.quotas;
